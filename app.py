@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Universal Reconcile v5", layout="wide", page_icon="🧩")
+st.set_page_config(page_title="Universal Reconcile v6", layout="wide", page_icon="🧩")
 
 st.title("🧩 Universal Reconciliation Tool")
 st.markdown("Select an **Anchor Column** to link files, then choose which fields to compare.")
@@ -127,6 +127,11 @@ if f1 and f2:
                 indicator=True
             )
 
+            # --- GLOBAL CALCULATIONS (For ALL rows) ---
+            # Calculate Diff immediately for everyone
+            if use_price:
+                merged['Diff'] = (merged['Price_1'].fillna(0) - merged['Price_2'].fillna(0)).round(2)
+
             # 4. ERROR LOGIC
             def analyze_row(row):
                 errors = []
@@ -138,9 +143,10 @@ if f1 and f2:
                 else:
                     if row['_merge'] != 'both': return ['Ignore']
 
-                # Check Values
+                # Check Values (only if exists in both)
                 if row['_merge'] == 'both':
                     if use_price:
+                        # Diff is already calculated globally, checking logic
                         p1 = float(row['Price_1']) if pd.notnull(row['Price_1']) else 0.0
                         p2 = float(row['Price_2']) if pd.notnull(row['Price_2']) else 0.0
                         if abs(p1 - p2) > 0.01: errors.append('Price Mismatch')
@@ -158,12 +164,12 @@ if f1 and f2:
             # Filter Ignore
             merged = merged[merged['Error_List'].apply(lambda x: 'Ignore' not in x)]
             
+            # Create Status and Flag for EVERYONE
             merged['Status'] = merged['Error_List'].apply(lambda x: ", ".join(x))
-            discrepancies = merged[merged['Status'] != 'OK'].copy()
-            
-            # Flag Logic (For display)
-            # 🔴 for errors, 🟢 for OK
             merged['Flag'] = merged['Status'].apply(lambda x: '🟢' if x == 'OK' else '🔴')
+
+            # Create a discrepancies view for Metrics only
+            discrepancies = merged[merged['Status'] != 'OK'].copy()
 
             # --- METRICS ---
             st.subheader("📊 Analysis Results")
@@ -190,20 +196,21 @@ if f1 and f2:
             st.write("---")
             show_all = st.checkbox("Show all rows (including Matched)", value=False)
             
-            # Filter based on checkbox
+            # Decide which DataFrame to show
             if show_all:
                 final_df_raw = merged.copy()
             else:
                 final_df_raw = discrepancies.copy()
-                # If we filter mismatches only, we still want the Flag column from the original merge logic
-                if not final_df_raw.empty:
-                    final_df_raw['Flag'] = '🔴' 
 
             # --- TABLE DISPLAY ---
             if not final_df_raw.empty:
                 
+                # Sort: Errors first, then OK
+                final_df_raw = final_df_raw.sort_values(by=['Status'], ascending=False)
+
                 # --- PREPARE COLUMNS ---
-                cols_to_show = ['Anchor_Disp_1', 'Anchor_Disp_2']
+                # We start with Flag, then Anchors
+                cols_to_show = ['Flag', 'Anchor_Disp_1', 'Anchor_Disp_2']
                 
                 rename_map = {
                     'Anchor_Disp_1': f"{key_col_1} (File 1)",
@@ -211,14 +218,12 @@ if f1 and f2:
                 }
                 
                 if use_price: 
-                    final_df_raw['Diff'] = (final_df_raw['Price_1'].fillna(0) - final_df_raw['Price_2'].fillna(0)).round(2)
                     cols_to_show.extend(['Price_1', 'Price_2', 'Diff'])
                 
                 if use_var_a: cols_to_show.extend(['VarA_1', 'VarA_2'])
                 if use_var_b: cols_to_show.extend(['VarB_1', 'VarB_2'])
                 
                 cols_to_show.append('Status')
-                cols_to_show.append('Flag') # Add indicator at the end
                 
                 # Create final view
                 final_df = final_df_raw[cols_to_show].rename(columns=rename_map)
@@ -238,9 +243,11 @@ if f1 and f2:
                 # Apply Styler
                 st.dataframe(
                     final_df.style.applymap(style_table),
-                    use_container_width=True
+                    use_container_width=True,
+                    hide_index=True
                 )
                 
+                # Download Button
                 csv = final_df.to_csv(index=False).encode('utf-8')
                 st.download_button("📥 Download Report", csv, "report.csv", "text/csv", type="primary")
 
@@ -248,3 +255,5 @@ if f1 and f2:
                 if not show_all and discrepancies.empty:
                      st.balloons()
                      st.success("✅ Perfect! No discrepancies found (Enable 'Show all rows' to see matches).")
+                elif show_all and merged.empty:
+                     st.warning("No data found after filtering.")
