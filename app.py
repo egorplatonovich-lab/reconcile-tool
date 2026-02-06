@@ -107,7 +107,6 @@ if f1 and f2:
             merged['Status'] = merged.apply(get_status, axis=1)
 
             # E. PREPARE FINAL REPORT
-            # We construct a clean table showing exactly what user asked for
             report = merged.copy()
             
             # Rename columns to be clear
@@ -143,11 +142,15 @@ if f1 and f2:
             if not discrepancies.empty:
                 st.subheader("⚠️ Discrepancies Found")
                 
-                # Dynamic Coloring
+                # Dynamic Coloring WITH BLACK TEXT
                 def style_table(val):
-                    if val == 'Only in File 1': return 'background-color: #e3f2fd' # Light Blue
-                    if val == 'Only in File 2': return 'background-color: #fff3e0' # Light Orange
-                    if val == 'Amount Mismatch': return 'background-color: #ffebee' # Light Red
+                    # Added 'color: black' to ensure text is readable on light background
+                    if val == 'Only in File 1': 
+                        return 'background-color: #e3f2fd; color: black;' 
+                    if val == 'Only in File 2': 
+                        return 'background-color: #fff3e0; color: black;' 
+                    if val == 'Amount Mismatch': 
+                        return 'background-color: #ffebee; color: black;' 
                     return ''
 
                 # Show table
