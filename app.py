@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Universal Reconcile v7", layout="wide", page_icon="🧩")
+st.set_page_config(page_title="Universal Reconcile v9", layout="wide", page_icon="🧩")
 
 # --- SESSION STATE INITIALIZATION ---
 if 'analysis_done' not in st.session_state:
@@ -97,7 +97,6 @@ if f1 and f2:
         st.write("---")
 
         # --- RUN ANALYSIS ---
-        # Кнопка теперь только ЗАПУСКАЕТ расчет и сохраняет в память
         if st.button("🚀 Run Analysis", type="primary"):
             
             # 1. Prepare Data
@@ -136,7 +135,7 @@ if f1 and f2:
                 indicator=True
             )
 
-            # Calculate Diff immediately
+            # Calculate Diff
             if use_price:
                 merged['Diff'] = (merged['Price_1'].fillna(0) - merged['Price_2'].fillna(0)).round(2)
 
@@ -144,14 +143,12 @@ if f1 and f2:
             def analyze_row(row):
                 errors = []
                 
-                # Check Existence
                 if report_missing:
                     if row['_merge'] == 'left_only': return ['Missing in File 2']
                     if row['_merge'] == 'right_only': return ['Missing in File 1']
                 else:
                     if row['_merge'] != 'both': return ['Ignore']
 
-                # Check Values (only if exists in both)
                 if row['_merge'] == 'both':
                     if use_price:
                         p1 = float(row['Price_1']) if pd.notnull(row['Price_1']) else 0.0
@@ -167,26 +164,20 @@ if f1 and f2:
                 return errors if errors else ['OK']
 
             merged['Error_List'] = merged.apply(analyze_row, axis=1)
-            
-            # Filter Ignore
             merged = merged[merged['Error_List'].apply(lambda x: 'Ignore' not in x)]
-            
-            # Create Status and Flag
             merged['Status'] = merged['Error_List'].apply(lambda x: ", ".join(x))
-            merged['Flag'] = merged['Status'].apply(lambda x: '🟢' if x == 'OK' else '🔴')
 
             # Create discrepancies view
             discrepancies = merged[merged['Status'] != 'OK'].copy()
             
-            # СОХРАНЯЕМ В ПАМЯТЬ (Session State)
+            # STORE IN SESSION STATE
             st.session_state['merged_data'] = merged
             st.session_state['discrepancies_data'] = discrepancies
             st.session_state['analysis_done'] = True
 
-        # --- DISPLAY RESULTS (Берем из памяти, если анализ был сделан) ---
+        # --- DISPLAY RESULTS ---
         if st.session_state['analysis_done']:
             
-            # Восстанавливаем данные из памяти
             merged = st.session_state['merged_data']
             discrepancies = st.session_state['discrepancies_data']
             
@@ -213,10 +204,8 @@ if f1 and f2:
 
             # --- DISPLAY CONTROLS ---
             st.write("---")
-            # Теперь эта галочка безопасна, так как данные берутся из st.session_state
             show_all = st.checkbox("Show all rows (including Matched)", value=False)
             
-            # Decide which DataFrame to show
             if show_all:
                 final_df_raw = merged.copy()
             else:
@@ -229,7 +218,8 @@ if f1 and f2:
                 final_df_raw = final_df_raw.sort_values(by=['Status'], ascending=False)
 
                 # --- PREPARE COLUMNS ---
-                cols_to_show = ['Flag', 'Anchor_Disp_1', 'Anchor_Disp_2']
+                # Убрали колонку Flag
+                cols_to_show = ['Anchor_Disp_1', 'Anchor_Disp_2']
                 
                 rename_map = {
                     'Anchor_Disp_1': f"{key_col_1} (File 1)",
@@ -244,27 +234,38 @@ if f1 and f2:
                 
                 cols_to_show.append('Status')
                 
-                # Create final view
-                final_df = final_df_raw[cols_to_show].rename(columns=rename_map)
-
-                # Fill NaNs with "None"
-                final_df = final_df.fillna("None")
+                # Dataframes for Display (with "None") and Download (Clean)
+                display_df = final_df_raw[cols_to_show].rename(columns=rename_map).fillna("None")
+                download_df = final_df_raw[cols_to_show].rename(columns=rename_map) # Leave NaNs empty for Excel
 
                 # --- STYLING LOGIC ---
-                def style_table(val):
+                
+                # 1. Функция для "None" (Глобальная)
+                def color_none(val):
                     if str(val) == "None":
-                        return 'color: #ff2b2b; font-weight: bold;' 
-                    return '' 
+                        return 'color: #d32f2f; font-weight: bold;' # Ярко-красный
+                    return ''
+                
+                # 2. Функция для "Status" (Специфичная)
+                def color_status(val):
+                    if val == 'OK':
+                        return 'color: #2e7d32; font-weight: bold;' # Зеленый
+                    else:
+                        return 'color: #d32f2f; font-weight: bold;' # Красный
 
                 # Apply Styler
+                # Мы используем цепочку map: сначала красим все None, потом перекрашиваем Status
                 st.dataframe(
-                    final_df.style.applymap(style_table),
+                    display_df.style
+                    .map(color_none)
+                    .map(color_status, subset=['Status']),
                     use_container_width=True,
                     hide_index=True
                 )
                 
-                csv = final_df.to_csv(index=False).encode('utf-8')
-                st.download_button("📥 Download Report", csv, "report.csv", "text/csv", type="primary")
+                # Download Button
+                csv = download_df.to_csv(index=False).encode('utf-8')
+                st.download_button("📥 Download Report (Clean CSV)", csv, "report.csv", "text/csv", type="primary")
 
             else:
                 if not show_all and discrepancies.empty:
