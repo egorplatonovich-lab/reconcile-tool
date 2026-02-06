@@ -2,7 +2,15 @@ import streamlit as st
 import pandas as pd
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Universal Reconcile v6", layout="wide", page_icon="🧩")
+st.set_page_config(page_title="Universal Reconcile v7", layout="wide", page_icon="🧩")
+
+# --- SESSION STATE INITIALIZATION ---
+if 'analysis_done' not in st.session_state:
+    st.session_state['analysis_done'] = False
+if 'merged_data' not in st.session_state:
+    st.session_state['merged_data'] = None
+if 'discrepancies_data' not in st.session_state:
+    st.session_state['discrepancies_data'] = None
 
 st.title("🧩 Universal Reconciliation Tool")
 st.markdown("Select an **Anchor Column** to link files, then choose which fields to compare.")
@@ -89,17 +97,18 @@ if f1 and f2:
         st.write("---")
 
         # --- RUN ANALYSIS ---
+        # Кнопка теперь только ЗАПУСКАЕТ расчет и сохраняет в память
         if st.button("🚀 Run Analysis", type="primary"):
             
             # 1. Prepare Data
             data1 = pd.DataFrame()
             data2 = pd.DataFrame()
 
-            # Anchors (Hidden key for merging)
+            # Anchors
             data1['_anchor'] = clean_string_key(df1[key_col_1])
             data2['_anchor'] = clean_string_key(df2[key_col_2])
             
-            # Visible Anchors (Original values)
+            # Visible Anchors
             data1['Anchor_Disp_1'] = df1[key_col_1].astype(str)
             data2['Anchor_Disp_2'] = df2[key_col_2].astype(str)
 
@@ -127,8 +136,7 @@ if f1 and f2:
                 indicator=True
             )
 
-            # --- GLOBAL CALCULATIONS (For ALL rows) ---
-            # Calculate Diff immediately for everyone
+            # Calculate Diff immediately
             if use_price:
                 merged['Diff'] = (merged['Price_1'].fillna(0) - merged['Price_2'].fillna(0)).round(2)
 
@@ -146,7 +154,6 @@ if f1 and f2:
                 # Check Values (only if exists in both)
                 if row['_merge'] == 'both':
                     if use_price:
-                        # Diff is already calculated globally, checking logic
                         p1 = float(row['Price_1']) if pd.notnull(row['Price_1']) else 0.0
                         p2 = float(row['Price_2']) if pd.notnull(row['Price_2']) else 0.0
                         if abs(p1 - p2) > 0.01: errors.append('Price Mismatch')
@@ -164,13 +171,25 @@ if f1 and f2:
             # Filter Ignore
             merged = merged[merged['Error_List'].apply(lambda x: 'Ignore' not in x)]
             
-            # Create Status and Flag for EVERYONE
+            # Create Status and Flag
             merged['Status'] = merged['Error_List'].apply(lambda x: ", ".join(x))
             merged['Flag'] = merged['Status'].apply(lambda x: '🟢' if x == 'OK' else '🔴')
 
-            # Create a discrepancies view for Metrics only
+            # Create discrepancies view
             discrepancies = merged[merged['Status'] != 'OK'].copy()
+            
+            # СОХРАНЯЕМ В ПАМЯТЬ (Session State)
+            st.session_state['merged_data'] = merged
+            st.session_state['discrepancies_data'] = discrepancies
+            st.session_state['analysis_done'] = True
 
+        # --- DISPLAY RESULTS (Берем из памяти, если анализ был сделан) ---
+        if st.session_state['analysis_done']:
+            
+            # Восстанавливаем данные из памяти
+            merged = st.session_state['merged_data']
+            discrepancies = st.session_state['discrepancies_data']
+            
             # --- METRICS ---
             st.subheader("📊 Analysis Results")
             
@@ -194,6 +213,7 @@ if f1 and f2:
 
             # --- DISPLAY CONTROLS ---
             st.write("---")
+            # Теперь эта галочка безопасна, так как данные берутся из st.session_state
             show_all = st.checkbox("Show all rows (including Matched)", value=False)
             
             # Decide which DataFrame to show
@@ -205,11 +225,10 @@ if f1 and f2:
             # --- TABLE DISPLAY ---
             if not final_df_raw.empty:
                 
-                # Sort: Errors first, then OK
+                # Sort: Errors first
                 final_df_raw = final_df_raw.sort_values(by=['Status'], ascending=False)
 
                 # --- PREPARE COLUMNS ---
-                # We start with Flag, then Anchors
                 cols_to_show = ['Flag', 'Anchor_Disp_1', 'Anchor_Disp_2']
                 
                 rename_map = {
@@ -228,16 +247,13 @@ if f1 and f2:
                 # Create final view
                 final_df = final_df_raw[cols_to_show].rename(columns=rename_map)
 
-                # Fill NaNs with "None" string so we can color them RED
+                # Fill NaNs with "None"
                 final_df = final_df.fillna("None")
 
                 # --- STYLING LOGIC ---
                 def style_table(val):
-                    # 1. If value is literal "None" -> Red Text
                     if str(val) == "None":
                         return 'color: #ff2b2b; font-weight: bold;' 
-                    
-                    # 2. No background color (Clean look)
                     return '' 
 
                 # Apply Styler
@@ -247,7 +263,6 @@ if f1 and f2:
                     hide_index=True
                 )
                 
-                # Download Button
                 csv = final_df.to_csv(index=False).encode('utf-8')
                 st.download_button("📥 Download Report", csv, "report.csv", "text/csv", type="primary")
 
