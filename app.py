@@ -121,6 +121,13 @@ if f1 and f2:
             # Filter only discrepancies
             discrepancies = report[report['Status'] != 'OK'].copy()
             
+            # --- CALCULATE SPLIT METRICS ---
+            # 1. Count items missing in one of the files
+            missing_ids_count = len(discrepancies[discrepancies['Status'].isin(['Only in File 1', 'Only in File 2'])])
+            
+            # 2. Count items where IDs match but price differs
+            price_mismatch_count = len(discrepancies[discrepancies['Status'] == 'Amount Mismatch'])
+
             # Define column order for display
             display_cols = [
                 final_col_id1, 
@@ -134,17 +141,19 @@ if f1 and f2:
             # --- 3. RESULTS ---
             st.divider()
             
-            k1, k2, k3 = st.columns(3)
+            # Now we use 4 columns instead of 3
+            k1, k2, k3, k4 = st.columns(4)
+            
             k1.metric("Total Rows", len(report))
-            k2.metric("Mismatches", len(discrepancies), delta_color="inverse")
-            k3.metric("Net Difference", f"{discrepancies['Diff'].sum():,.2f}")
+            k2.metric("Missing IDs", missing_ids_count, delta_color="inverse")
+            k3.metric("Price Mismatches", price_mismatch_count, delta_color="inverse")
+            k4.metric("Net Difference", f"{discrepancies['Diff'].sum():,.2f}")
 
             if not discrepancies.empty:
                 st.subheader("⚠️ Discrepancies Found")
                 
                 # Dynamic Coloring WITH BLACK TEXT
                 def style_table(val):
-                    # Added 'color: black' to ensure text is readable on light background
                     if val == 'Only in File 1': 
                         return 'background-color: #e3f2fd; color: black;' 
                     if val == 'Only in File 2': 
