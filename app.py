@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Universal Reconcile v3", layout="wide", page_icon="🧩")
+st.set_page_config(page_title="Universal Reconcile v4", layout="wide", page_icon="🧩")
 
 st.title("🧩 Universal Reconciliation Tool")
 st.markdown("Select an **Anchor Column** to link files, then choose which fields to compare.")
@@ -55,7 +55,6 @@ if f1 and f2:
         key_col_1 = k1.selectbox(f"Link Column ({f1.name})", df1.columns)
         key_col_2 = k2.selectbox(f"Link Column ({f2.name})", df2.columns)
         
-        # Исправленное описание галочки
         report_missing = st.checkbox("📢 Show unmatched rows (Show items missing in File 1 OR File 2)", value=True)
 
         # === B. COMPARISON MODULES ===
@@ -92,16 +91,15 @@ if f1 and f2:
         # --- RUN ANALYSIS ---
         if st.button("🚀 Run Analysis", type="primary"):
             
-            # 1. Prepare Data with FIXED column names to prevent KeyError
-            # We create a new clean dataframe for merging to avoid naming confusion
+            # 1. Prepare Data
             data1 = pd.DataFrame()
             data2 = pd.DataFrame()
 
-            # Anchors
+            # Anchors (Hidden key for merging)
             data1['_anchor'] = clean_string_key(df1[key_col_1])
             data2['_anchor'] = clean_string_key(df2[key_col_2])
             
-            # Keep original anchor names for display
+            # Visible Anchors (Original values)
             data1['Anchor_Disp_1'] = df1[key_col_1].astype(str)
             data2['Anchor_Disp_2'] = df2[key_col_2].astype(str)
 
@@ -140,7 +138,7 @@ if f1 and f2:
                 else:
                     if row['_merge'] != 'both': return ['Ignore']
 
-                # Check Values (only if exists in both)
+                # Check Values
                 if row['_merge'] == 'both':
                     if use_price:
                         p1 = float(row['Price_1']) if pd.notnull(row['Price_1']) else 0.0
@@ -188,11 +186,14 @@ if f1 and f2:
             if not discrepancies.empty:
                 st.write("---")
                 
-                # Build Display Columns dynamically based on what exists
-                cols_to_show = ['Anchor_Disp_1']
+                # --- ВОЗВРАЩАЕМ ДВЕ КОЛОНКИ ЯКОРЯ ---
+                cols_to_show = ['Anchor_Disp_1', 'Anchor_Disp_2']
                 
-                # Rename dict for pretty headers
-                rename_map = {'Anchor_Disp_1': f"Anchor ({f1.name})"}
+                # Dynamic Rename Map
+                rename_map = {
+                    'Anchor_Disp_1': f"{key_col_1} (File 1)",
+                    'Anchor_Disp_2': f"{key_col_2} (File 2)"
+                }
                 
                 if use_price: 
                     discrepancies['Diff'] = (discrepancies['Price_1'].fillna(0) - discrepancies['Price_2'].fillna(0)).round(2)
