@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Universal Reconcile v4", layout="wide", page_icon="🧩")
+st.set_page_config(page_title="Universal Reconcile v5", layout="wide", page_icon="🧩")
 
 st.title("🧩 Universal Reconciliation Tool")
 st.markdown("Select an **Anchor Column** to link files, then choose which fields to compare.")
@@ -160,6 +160,10 @@ if f1 and f2:
             
             merged['Status'] = merged['Error_List'].apply(lambda x: ", ".join(x))
             discrepancies = merged[merged['Status'] != 'OK'].copy()
+            
+            # Flag Logic (For display)
+            # 🔴 for errors, 🟢 for OK
+            merged['Flag'] = merged['Status'].apply(lambda x: '🟢' if x == 'OK' else '🔴')
 
             # --- METRICS ---
             st.subheader("📊 Analysis Results")
@@ -182,42 +186,58 @@ if f1 and f2:
                 other_err = discrepancies['Status'].str.contains('Field').sum()
                 m_cols[3].metric("Content Mismatches", other_err, delta_color="inverse")
 
+            # --- DISPLAY CONTROLS ---
+            st.write("---")
+            show_all = st.checkbox("Show all rows (including Matched)", value=False)
+            
+            # Filter based on checkbox
+            if show_all:
+                final_df_raw = merged.copy()
+            else:
+                final_df_raw = discrepancies.copy()
+                # If we filter mismatches only, we still want the Flag column from the original merge logic
+                if not final_df_raw.empty:
+                    final_df_raw['Flag'] = '🔴' 
+
             # --- TABLE DISPLAY ---
-            if not discrepancies.empty:
-                st.write("---")
+            if not final_df_raw.empty:
                 
-                # --- ВОЗВРАЩАЕМ ДВЕ КОЛОНКИ ЯКОРЯ ---
+                # --- PREPARE COLUMNS ---
                 cols_to_show = ['Anchor_Disp_1', 'Anchor_Disp_2']
                 
-                # Dynamic Rename Map
                 rename_map = {
                     'Anchor_Disp_1': f"{key_col_1} (File 1)",
                     'Anchor_Disp_2': f"{key_col_2} (File 2)"
                 }
                 
                 if use_price: 
-                    discrepancies['Diff'] = (discrepancies['Price_1'].fillna(0) - discrepancies['Price_2'].fillna(0)).round(2)
+                    final_df_raw['Diff'] = (final_df_raw['Price_1'].fillna(0) - final_df_raw['Price_2'].fillna(0)).round(2)
                     cols_to_show.extend(['Price_1', 'Price_2', 'Diff'])
                 
                 if use_var_a: cols_to_show.extend(['VarA_1', 'VarA_2'])
                 if use_var_b: cols_to_show.extend(['VarB_1', 'VarB_2'])
                 
                 cols_to_show.append('Status')
+                cols_to_show.append('Flag') # Add indicator at the end
                 
                 # Create final view
-                final_df = discrepancies[cols_to_show].rename(columns=rename_map)
+                final_df = final_df_raw[cols_to_show].rename(columns=rename_map)
 
-                # Coloring logic
-                def color_rows(row):
-                    s = row['Status']
-                    css = 'color: black; '
-                    if 'Missing' in s: return css + 'background-color: #ffcdd2' # Red
-                    if 'Price' in s: return css + 'background-color: #fff9c4' # Yellow
-                    if 'Field' in s: return css + 'background-color: #e1bee7' # Purple
-                    return css
+                # Fill NaNs with "None" string so we can color them RED
+                final_df = final_df.fillna("None")
 
+                # --- STYLING LOGIC ---
+                def style_table(val):
+                    # 1. If value is literal "None" -> Red Text
+                    if str(val) == "None":
+                        return 'color: #ff2b2b; font-weight: bold;' 
+                    
+                    # 2. No background color (Clean look)
+                    return '' 
+
+                # Apply Styler
                 st.dataframe(
-                    final_df.style.apply(lambda x: [color_rows(final_df.loc[x.name]) for i in x], axis=1),
+                    final_df.style.applymap(style_table),
                     use_container_width=True
                 )
                 
@@ -225,5 +245,6 @@ if f1 and f2:
                 st.download_button("📥 Download Report", csv, "report.csv", "text/csv", type="primary")
 
             else:
-                st.balloons()
-                st.success("✅ Clean! No discrepancies found based on your settings.")
+                if not show_all and discrepancies.empty:
+                     st.balloons()
+                     st.success("✅ Perfect! No discrepancies found (Enable 'Show all rows' to see matches).")
