@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Universal Reconcile v11", layout="wide", page_icon="🧩")
+st.set_page_config(page_title="Universal Reconcile v12", layout="wide", page_icon="🧩")
 
 # --- SESSION STATE INITIALIZATION ---
 if 'analysis_done' not in st.session_state:
@@ -21,7 +21,6 @@ st.divider()
 def load_data(file):
     try:
         if file.name.endswith('.csv'):
-            # Low_memory=False helps with larger files guessing types
             return pd.read_csv(file, low_memory=False)
         else:
             return pd.read_excel(file)
@@ -43,12 +42,12 @@ def clean_compare_string(series):
     """Clean Comparison Fields"""
     return series.astype(str).fillna("").str.strip()
 
-# --- 1. UPLOAD ---
+# --- 1. UPLOAD (RENAMED TO OUR / PROVIDER) ---
 c1, c2 = st.columns(2)
 with c1:
-    f1 = st.file_uploader("📂 File 1 (Source)", key="f1")
+    f1 = st.file_uploader("📂 OUR (Internal Data)", key="f1")
 with c2:
-    f2 = st.file_uploader("📂 File 2 (Target)", key="f2")
+    f2 = st.file_uploader("📂 PROVIDER (External Data)", key="f2")
 
 # --- 2. CONFIGURATION ---
 if f1 and f2:
@@ -63,16 +62,17 @@ if f1 and f2:
         st.info("⚠️ Ensure this column is unique (ID). Linking by 'Status' or 'Date' will cause massive data explosion.")
         
         k1, k2 = st.columns(2)
-        key_col_1 = k1.selectbox(f"Link Column ({f1.name})", df1.columns)
-        key_col_2 = k2.selectbox(f"Link Column ({f2.name})", df2.columns)
+        key_col_1 = k1.selectbox(f"Link Column (OUR - {f1.name})", df1.columns)
+        key_col_2 = k2.selectbox(f"Link Column (PROVIDER - {f2.name})", df2.columns)
         
-        # Check for duplicates to warn user BEFORE run
+        # Check for duplicates
         dupes1 = df1[key_col_1].duplicated().sum()
         dupes2 = df2[key_col_2].duplicated().sum()
         if dupes1 > 0 or dupes2 > 0:
-             st.warning(f"⚠️ Potential Risk: Anchor columns contain duplicates (File1: {dupes1}, File2: {dupes2}). This may result in millions of rows.")
+             st.warning(f"⚠️ Potential Risk: Anchor columns contain duplicates (OUR: {dupes1}, PROVIDER: {dupes2}). This may result in millions of rows.")
 
-        report_missing = st.checkbox("📢 Show unmatched rows (Show items missing in File 1 OR File 2)", value=True)
+        # --- HIDDEN SETTING: ALWAYS REPORT MISSING ROWS ---
+        report_missing = True 
 
         # === B. COMPARISON MODULES ===
         st.subheader("⚙️ 2. What to compare?")
@@ -84,24 +84,24 @@ if f1 and f2:
             use_price = st.checkbox("💰 Price / Amount", value=True)
             p_col_1, p_col_2 = None, None
             if use_price:
-                p_col_1 = st.selectbox(f"Price ({f1.name})", df1.columns, key="p1")
-                p_col_2 = st.selectbox(f"Price ({f2.name})", df2.columns, key="p2")
+                p_col_1 = st.selectbox(f"Price (OUR)", df1.columns, key="p1")
+                p_col_2 = st.selectbox(f"Price (PROVIDER)", df2.columns, key="p2")
 
         # Module 2: Variable A
         with col_conf2:
             use_var_a = st.checkbox("String Field A (e.g. User)", value=False)
             va_col_1, va_col_2 = None, None
             if use_var_a:
-                va_col_1 = st.selectbox(f"Field A ({f1.name})", df1.columns, key="va1")
-                va_col_2 = st.selectbox(f"Field A ({f2.name})", df2.columns, key="va2")
+                va_col_1 = st.selectbox(f"Field A (OUR)", df1.columns, key="va1")
+                va_col_2 = st.selectbox(f"Field A (PROVIDER)", df2.columns, key="va2")
 
         # Module 3: Variable B
         with col_conf3:
             use_var_b = st.checkbox("String Field B (e.g. Status)", value=False)
             vb_col_1, vb_col_2 = None, None
             if use_var_b:
-                vb_col_1 = st.selectbox(f"Field B ({f1.name})", df1.columns, key="vb1")
-                vb_col_2 = st.selectbox(f"Field B ({f2.name})", df2.columns, key="vb2")
+                vb_col_1 = st.selectbox(f"Field B (OUR)", df1.columns, key="vb1")
+                vb_col_2 = st.selectbox(f"Field B (PROVIDER)", df2.columns, key="vb2")
 
         st.write("---")
 
@@ -144,7 +144,7 @@ if f1 and f2:
                 indicator=True
             )
 
-            # Calculate Diff
+            # Calculate Diff (OUR - PROVIDER)
             if use_price:
                 merged['Diff'] = (merged['Price_1'].fillna(0) - merged['Price_2'].fillna(0)).round(2)
 
@@ -152,11 +152,9 @@ if f1 and f2:
             def analyze_row(row):
                 errors = []
                 
-                if report_missing:
-                    if row['_merge'] == 'left_only': return ['Missing in File 2']
-                    if row['_merge'] == 'right_only': return ['Missing in File 1']
-                else:
-                    if row['_merge'] != 'both': return ['Ignore']
+                # Check Existence (Always ON now)
+                if row['_merge'] == 'left_only': return ['Missing in PROVIDER']
+                if row['_merge'] == 'right_only': return ['Missing in OUR']
 
                 if row['_merge'] == 'both':
                     if use_price:
@@ -173,7 +171,6 @@ if f1 and f2:
                 return errors if errors else ['OK']
 
             merged['Error_List'] = merged.apply(analyze_row, axis=1)
-            merged = merged[merged['Error_List'].apply(lambda x: 'Ignore' not in x)]
             merged['Status'] = merged['Error_List'].apply(lambda x: ", ".join(x))
 
             # Create discrepancies view
@@ -196,15 +193,28 @@ if f1 and f2:
             m_cols = st.columns(4)
             m_cols[0].metric("Total Matched Rows", len(merged))
             
-            missing_cnt = 0
-            if report_missing:
-                missing_cnt = len(discrepancies[discrepancies['Status'].str.contains('Missing')])
-                m_cols[1].metric("Missing Rows", missing_cnt, delta_color="inverse")
+            # Missing Rows
+            missing_cnt = len(discrepancies[discrepancies['Status'].str.contains('Missing')])
+            m_cols[1].metric("Missing Rows", missing_cnt, delta_color="inverse")
             
-            price_err = 0
+            # Price Mismatches with SUM Diff
+            price_err_count = 0
+            price_diff_sum = 0.0
+            
             if use_price:
-                price_err = discrepancies['Status'].str.contains('Price').sum()
-                m_cols[2].metric("Price Mismatches", price_err, delta_color="inverse")
+                # Filter rows that specifically have a Price Mismatch (ignoring pure missing rows for this sum if needed, 
+                # or including them if they have 0 vs Value. Logic: 'Price Mismatch' tag is only added for 'both' rows in analyze_row function)
+                price_mismatch_rows = discrepancies[discrepancies['Status'].str.contains('Price Mismatch')]
+                price_err_count = len(price_mismatch_rows)
+                price_diff_sum = price_mismatch_rows['Diff'].sum()
+                
+                # Display Count as value, Sum as Delta
+                m_cols[2].metric(
+                    label="Price Mismatches", 
+                    value=f"{price_err_count}", 
+                    delta=f"{price_diff_sum:,.2f}", 
+                    delta_color="normal" # Green for positive (Our > Prov), Red for negative (Our < Prov)
+                )
                 
             other_err = 0
             if use_var_a or use_var_b:
@@ -220,56 +230,55 @@ if f1 and f2:
             else:
                 final_df_raw = discrepancies.copy()
 
-            # --- PREPARE COLUMNS ---
+            # --- TABLE DISPLAY ---
             if not final_df_raw.empty:
+                
                 # Sort: Errors first
                 final_df_raw = final_df_raw.sort_values(by=['Status'], ascending=False)
-                
+
+                # --- PREPARE COLUMNS ---
                 cols_to_show = ['Anchor_Disp_1', 'Anchor_Disp_2']
                 
                 rename_map = {
-                    'Anchor_Disp_1': f"{key_col_1} (File 1)",
-                    'Anchor_Disp_2': f"{key_col_2} (File 2)"
+                    'Anchor_Disp_1': f"{key_col_1} (OUR)",
+                    'Anchor_Disp_2': f"{key_col_2} (PROVIDER)"
                 }
                 
                 if use_price: 
                     cols_to_show.extend(['Price_1', 'Price_2', 'Diff'])
+                
                 if use_var_a: cols_to_show.extend(['VarA_1', 'VarA_2'])
                 if use_var_b: cols_to_show.extend(['VarB_1', 'VarB_2'])
                 
                 cols_to_show.append('Status')
                 
-                # --- DOWNLOAD PREPARATION (FULL DATASET) ---
-                # Формируем CSV из полного набора данных, даже если он огромный
+                # --- DOWNLOAD & DISPLAY PREP ---
                 download_df = final_df_raw[cols_to_show].rename(columns=rename_map)
                 csv = download_df.to_csv(index=False).encode('utf-8')
-                
-                # Кнопка скачивания доступна ВСЕГДА
                 st.download_button("📥 Download Full Report (CSV)", csv, "report.csv", "text/csv", type="primary")
 
-                # --- VISUALIZATION SAFETY CHECK ---
-                MAX_ROWS_DISPLAY = 100000  # Максимум 100к строк для отрисовки
-                
+                # LIMIT VISUALS
+                MAX_ROWS_DISPLAY = 100000
                 if len(final_df_raw) > MAX_ROWS_DISPLAY:
-                    st.warning(f"⚠️ **Display Limit Reached:** The result has {len(final_df_raw)} rows, which is too much for the browser to render smoothly. The table preview is hidden to prevent crashing. Please use the **Download** button above to see the full data.")
+                    st.warning(f"⚠️ Display limit reached ({len(final_df_raw)} rows). Showing first 1000 rows. Use Download for full data.")
+                    display_df = download_df.head(1000).fillna("None")
                 else:
-                    # SAFE TO RENDER
                     display_df = download_df.fillna("None")
-                    
-                    # Styling functions
-                    def color_none(val):
-                        if str(val) == "None": return 'color: #d32f2f; font-weight: bold;' 
-                        return ''
-                    
-                    def color_status(val):
-                        if val == 'OK': return 'color: #2e7d32; font-weight: bold;'
-                        else: return 'color: #d32f2f; font-weight: bold;'
+                
+                # Styling
+                def color_none(val):
+                    if str(val) == "None": return 'color: #d32f2f; font-weight: bold;' 
+                    return ''
+                
+                def color_status(val):
+                    if val == 'OK': return 'color: #2e7d32; font-weight: bold;'
+                    else: return 'color: #d32f2f; font-weight: bold;'
 
-                    st.dataframe(
-                        display_df.style.map(color_none).map(color_status, subset=['Status']),
-                        use_container_width=True,
-                        hide_index=True
-                    )
+                st.dataframe(
+                    display_df.style.map(color_none).map(color_status, subset=['Status']),
+                    use_container_width=True,
+                    hide_index=True
+                )
 
             else:
                 if not show_all and discrepancies.empty:
