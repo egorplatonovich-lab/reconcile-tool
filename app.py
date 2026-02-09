@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Universal Reconcile v9", layout="wide", page_icon="🧩")
+st.set_page_config(page_title="Universal Reconcile v11", layout="wide", page_icon="🧩")
 
 # --- SESSION STATE INITIALIZATION ---
 if 'analysis_done' not in st.session_state:
@@ -13,7 +13,7 @@ if 'discrepancies_data' not in st.session_state:
     st.session_state['discrepancies_data'] = None
 
 st.title("🧩 Universal Reconciliation Tool")
-st.markdown("Select an **Anchor Column** to link files, then choose which fields to compare.")
+st.markdown("Select an **Anchor Column** (Unique ID) to link files.")
 st.divider()
 
 # --- HELPER FUNCTIONS ---
@@ -21,7 +21,8 @@ st.divider()
 def load_data(file):
     try:
         if file.name.endswith('.csv'):
-            return pd.read_csv(file)
+            # Low_memory=False helps with larger files guessing types
+            return pd.read_csv(file, low_memory=False)
         else:
             return pd.read_excel(file)
     except Exception as e:
@@ -59,10 +60,18 @@ if f1 and f2:
         
         # === A. ANCHOR COLUMN ===
         st.subheader("🔗 1. Anchor Column (The Link)")
+        st.info("⚠️ Ensure this column is unique (ID). Linking by 'Status' or 'Date' will cause massive data explosion.")
+        
         k1, k2 = st.columns(2)
         key_col_1 = k1.selectbox(f"Link Column ({f1.name})", df1.columns)
         key_col_2 = k2.selectbox(f"Link Column ({f2.name})", df2.columns)
         
+        # Check for duplicates to warn user BEFORE run
+        dupes1 = df1[key_col_1].duplicated().sum()
+        dupes2 = df2[key_col_2].duplicated().sum()
+        if dupes1 > 0 or dupes2 > 0:
+             st.warning(f"⚠️ Potential Risk: Anchor columns contain duplicates (File1: {dupes1}, File2: {dupes2}). This may result in millions of rows.")
+
         report_missing = st.checkbox("📢 Show unmatched rows (Show items missing in File 1 OR File 2)", value=True)
 
         # === B. COMPARISON MODULES ===
@@ -211,14 +220,11 @@ if f1 and f2:
             else:
                 final_df_raw = discrepancies.copy()
 
-            # --- TABLE DISPLAY ---
+            # --- PREPARE COLUMNS ---
             if not final_df_raw.empty:
-                
                 # Sort: Errors first
                 final_df_raw = final_df_raw.sort_values(by=['Status'], ascending=False)
-
-                # --- PREPARE COLUMNS ---
-                # Убрали колонку Flag
+                
                 cols_to_show = ['Anchor_Disp_1', 'Anchor_Disp_2']
                 
                 rename_map = {
@@ -228,48 +234,46 @@ if f1 and f2:
                 
                 if use_price: 
                     cols_to_show.extend(['Price_1', 'Price_2', 'Diff'])
-                
                 if use_var_a: cols_to_show.extend(['VarA_1', 'VarA_2'])
                 if use_var_b: cols_to_show.extend(['VarB_1', 'VarB_2'])
                 
                 cols_to_show.append('Status')
                 
-                # Dataframes for Display (with "None") and Download (Clean)
-                display_df = final_df_raw[cols_to_show].rename(columns=rename_map).fillna("None")
-                download_df = final_df_raw[cols_to_show].rename(columns=rename_map) # Leave NaNs empty for Excel
-
-                # --- STYLING LOGIC ---
-                
-                # 1. Функция для "None" (Глобальная)
-                def color_none(val):
-                    if str(val) == "None":
-                        return 'color: #d32f2f; font-weight: bold;' # Ярко-красный
-                    return ''
-                
-                # 2. Функция для "Status" (Специфичная)
-                def color_status(val):
-                    if val == 'OK':
-                        return 'color: #2e7d32; font-weight: bold;' # Зеленый
-                    else:
-                        return 'color: #d32f2f; font-weight: bold;' # Красный
-
-                # Apply Styler
-                # Мы используем цепочку map: сначала красим все None, потом перекрашиваем Status
-                st.dataframe(
-                    display_df.style
-                    .map(color_none)
-                    .map(color_status, subset=['Status']),
-                    use_container_width=True,
-                    hide_index=True
-                )
-                
-                # Download Button
+                # --- DOWNLOAD PREPARATION (FULL DATASET) ---
+                # Формируем CSV из полного набора данных, даже если он огромный
+                download_df = final_df_raw[cols_to_show].rename(columns=rename_map)
                 csv = download_df.to_csv(index=False).encode('utf-8')
-                st.download_button("📥 Download Report (Clean CSV)", csv, "report.csv", "text/csv", type="primary")
+                
+                # Кнопка скачивания доступна ВСЕГДА
+                st.download_button("📥 Download Full Report (CSV)", csv, "report.csv", "text/csv", type="primary")
+
+                # --- VISUALIZATION SAFETY CHECK ---
+                MAX_ROWS_DISPLAY = 100000  # Максимум 100к строк для отрисовки
+                
+                if len(final_df_raw) > MAX_ROWS_DISPLAY:
+                    st.warning(f"⚠️ **Display Limit Reached:** The result has {len(final_df_raw)} rows, which is too much for the browser to render smoothly. The table preview is hidden to prevent crashing. Please use the **Download** button above to see the full data.")
+                else:
+                    # SAFE TO RENDER
+                    display_df = download_df.fillna("None")
+                    
+                    # Styling functions
+                    def color_none(val):
+                        if str(val) == "None": return 'color: #d32f2f; font-weight: bold;' 
+                        return ''
+                    
+                    def color_status(val):
+                        if val == 'OK': return 'color: #2e7d32; font-weight: bold;'
+                        else: return 'color: #d32f2f; font-weight: bold;'
+
+                    st.dataframe(
+                        display_df.style.map(color_none).map(color_status, subset=['Status']),
+                        use_container_width=True,
+                        hide_index=True
+                    )
 
             else:
                 if not show_all and discrepancies.empty:
                      st.balloons()
-                     st.success("✅ Perfect! No discrepancies found (Enable 'Show all rows' to see matches).")
+                     st.success("✅ Perfect! No discrepancies found.")
                 elif show_all and merged.empty:
                      st.warning("No data found after filtering.")
