@@ -3,7 +3,7 @@ import pandas as pd
 import re
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Universal Reconcile v25", layout="wide", page_icon="🧩")
+st.set_page_config(page_title="Universal Reconcile v26", layout="wide", page_icon="🧩")
 
 # --- SESSION STATE ---
 if 'analysis_done' not in st.session_state: st.session_state['analysis_done'] = False
@@ -17,7 +17,6 @@ st.title("🧩 Universal Reconciliation Tool")
 def load_data(file):
     try:
         if file.name.endswith('.csv'):
-            # Read all as string first to prevent auto-conversion errors
             return pd.read_csv(file, low_memory=False)
         else:
             return pd.read_excel(file)
@@ -30,15 +29,9 @@ def clean_currency(series):
     return series.astype(str).str.replace(r'[^\d.,-]', '', regex=True).str.replace(',', '.').astype(float)
 
 def clean_string_key(series):
-    """
-    AGGRESSIVE KEY CLEANING
-    Ensures '123', '123.0', ' 123 ' and '123' all match.
-    """
-    # 1. Force string and handle NaNs
+    # AGGRESSIVE KEY CLEANING (v25 Logic)
     s = series.astype(str).fillna("")
-    # 2. Strip whitespace and Lowercase (UUID case sensitivity fix)
     s = s.str.strip().str.lower()
-    # 3. Remove Excel's annoying '.0' from integer-like strings
     s = s.str.replace(r'\.0$', '', regex=True)
     return s
 
@@ -46,6 +39,7 @@ def clean_compare_string(series):
     return series.astype(str).fillna("").str.strip()
 
 def nuclear_date_parser(val):
+    # NUCLEAR DATE PARSER (v21/v23 Logic)
     s = str(val).strip()
     s = s.replace('T', ' ').replace('Z', '')
     
@@ -141,7 +135,6 @@ if f1 and f2:
             df1['_date_obj'] = df1[date_col_1].apply(nuclear_date_parser)
             df2['_date_obj'] = df2[date_col_2].apply(nuclear_date_parser)
             
-            # Check parsing
             if df1['_date_obj'].notna().sum() == 0:
                 st.error(f"❌ Could not parse dates in OUR file '{date_col_1}'.")
                 st.stop()
@@ -149,11 +142,10 @@ if f1 and f2:
                 st.error(f"❌ Could not parse dates in PROVIDER file '{date_col_2}'.")
                 st.stop()
 
-            # 2. PREPARE DATA (With Aggressive Cleaning)
+            # 2. PREPARE DATA
             data1 = pd.DataFrame()
             data2 = pd.DataFrame()
             
-            # --- CRITICAL FIX: Aggressive Key Cleaning ---
             data1['_anchor'] = clean_string_key(df1[key_col_1])
             data2['_anchor'] = clean_string_key(df2[key_col_2])
             
@@ -222,7 +214,6 @@ if f1 and f2:
                 s_prov = d_prov.strftime('%Y-%m-%d') if pd.notnull(d_prov) else "Unknown"
                 s_our = d_our.strftime('%Y-%m-%d') if pd.notnull(d_our) else "Unknown"
 
-                # Global Search Logic
                 if 'Missing in PROVIDER' in status:
                     if row['_merge'] == 'both': return f"✅ Found in PROV on {s_prov}"
                     else: return "❌ Not found anywhere in PROV"
@@ -252,13 +243,39 @@ if f1 and f2:
             
             if not df_main.empty:
                 discrepancies = df_main[df_main['Status'] != 'OK']
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Rows (This Month)", len(df_main))
-                m2.metric("Discrepancies", len(discrepancies), delta_color="inverse")
+                
+                # --- METRICS CALCULATIONS ---
+                # 1. Total Rows
+                total_cnt = len(df_main)
+                
+                # 2. Missing Rows (Date errors)
+                missing_cnt = discrepancies['Status'].str.contains('Missing').sum()
+                
+                # 3. Price Errors & Net Diff
+                price_cnt = 0
+                net_diff = 0.0
                 if use_price:
-                    diff_val = discrepancies[discrepancies['Status'].str.contains('Price')]['Diff'].sum()
-                    m3.metric("Net Price Difference", f"{diff_val:,.2f}")
+                    price_errs = discrepancies[discrepancies['Status'].str.contains('Price')]
+                    price_cnt = len(price_errs)
+                    net_diff = price_errs['Diff'].sum()
+                
+                # 4. Content Errors
+                content_cnt = discrepancies['Status'].str.contains('User|Add\'l').sum()
 
+                # --- DISPLAY METRICS ---
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Total Rows", total_cnt)
+                m2.metric("Missing (Date/Exist)", missing_cnt, delta_color="inverse")
+                
+                # Display Price Count with SUM underneath
+                if use_price:
+                    m3.metric("Price Mismatches", price_cnt, delta=f"{net_diff:,.2f}")
+                else:
+                    m3.metric("Price Mismatches", "N/A")
+                    
+                m4.metric("Content Mismatches", content_cnt, delta_color="inverse")
+
+                # --- VIEW CONTROLS ---
                 c_view, c_down = st.columns([1, 4])
                 with c_view: show_all = st.checkbox("Show all rows", value=False)
                 
