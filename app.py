@@ -3,7 +3,7 @@ import pandas as pd
 import datetime
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Universal Reconcile v19", layout="wide", page_icon="🧩")
+st.set_page_config(page_title="Universal Reconcile v20", layout="wide", page_icon="🧩")
 
 # --- SESSION STATE ---
 if 'analysis_done' not in st.session_state: st.session_state['analysis_done'] = False
@@ -34,25 +34,28 @@ def clean_string_key(series):
 def clean_compare_string(series):
     return series.astype(str).fillna("").str.strip()
 
-def aggressive_date_parse(series):
+def super_robust_date_parse(series):
     """
-    Handles mixed formats (ISO with 'Z' vs European dots).
-    Normalizes everything to Timezone-Naive datetime.
+    Brute-force date parsing.
+    1. Clean strings (remove T, Z).
+    2. Try multiple strategies.
+    3. Strip timezones.
     """
-    # 1. Convert to string to avoid object type issues
-    s = series.astype(str)
+    # 1. Force string and clean artifacts
+    s = series.astype(str).str.strip()
     
-    # 2. Use coerce to force parsing. utc=True handles the 'Z' automatically.
-    # dayfirst=True helps with 31.01.2026
-    # We try two approaches because dayfirst=True can sometimes confuse ISO format
+    # Remove 'Z' (UTC marker) and 'T' (ISO separator) to simplify parsing
+    # '2026-01-31T20:57:37.904623Z' -> '2026-01-31 20:57:37.904623'
+    s = s.str.replace('Z', '', regex=False).str.replace('T', ' ', regex=False)
+    
+    # 2. Strategy A: Pandas auto-magic with UTC=True (handles most ISO)
     try:
-        # Priority 1: Smart parse with UTC normalization (Handles 'Z')
-        dt = pd.to_datetime(s, utc=True, dayfirst=True, errors='coerce')
+        dt = pd.to_datetime(s, dayfirst=True, utc=True, errors='coerce')
     except:
+        # 3. Strategy B: Fallback if mixed garbage
         dt = pd.to_datetime(s, errors='coerce')
 
-    # 3. CRITICAL STEP: Remove Timezone Information
-    # This makes '2026-01-31 20:00:00+00:00' equal to '2026-01-31 20:00:00'
+    # 4. CRITICAL: Kill Timezones (Make everything naive)
     if dt.dt.tz is not None:
         dt = dt.dt.tz_localize(None)
         
@@ -76,7 +79,7 @@ if f1 and f2:
         
         col_per1, col_per2, col_per3, col_per4 = st.columns(4)
         with col_per1:
-            target_year = st.selectbox("Target Year", range(2023, 2030), index=3) # 2026 default
+            target_year = st.selectbox("Target Year", range(2023, 2030), index=3) # 2026
         with col_per2:
             months = {1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June", 
                       7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December"}
@@ -89,7 +92,6 @@ if f1 and f2:
             date_col_2 = st.selectbox("Date Column (PROVIDER)", df2.columns)
 
         st.write("")
-        
         anchor_help = "Must be UNIQUE ID."
         k1, k2, k_buff = st.columns([2, 2, 3])
         with k1: key_col_1 = st.selectbox(f"Anchor ID (OUR)", df1.columns, help=anchor_help)
@@ -130,23 +132,23 @@ if f1 and f2:
         # --- RUN ANALYSIS ---
         if st.button("🚀 Run Analysis", type="primary"):
             
-            # --- 0. VALIDATION ---
+            # --- VALIDATION ---
             errors_found = []
-            if use_var_a and (va_col_1 == key_col_1 or va_col_2 == key_col_2):
-                errors_found.append("❌ User column cannot be the same as Anchor column.")
+            if use_var_a and (va_col_1 == key_col_1 or va_col_2 == key_col_2): errors_found.append("❌ User column matches Anchor.")
             if errors_found:
                 for e in errors_found: st.error(e)
                 st.stop()
 
-            # --- 1. AGGRESSIVE DATE PARSING ---
-            df1['_date_obj'] = aggressive_date_parse(df1[date_col_1])
-            df2['_date_obj'] = aggressive_date_parse(df2[date_col_2])
+            # --- 1. SUPER ROBUST DATE PARSING ---
+            with st.spinner("Parsing dates..."):
+                df1['_date_obj'] = super_robust_date_parse(df1[date_col_1])
+                df2['_date_obj'] = super_robust_date_parse(df2[date_col_2])
 
-            # Debug Info (Show if dates failed)
-            na1 = df1['_date_obj'].isna().sum()
-            na2 = df2['_date_obj'].isna().sum()
-            if na1 > 0: st.toast(f"⚠️ {na1} dates in OUR file couldn't be parsed.", icon="⚠️")
-            if na2 > 0: st.toast(f"⚠️ {na2} dates in PROVIDER file couldn't be parsed.", icon="⚠️")
+            # Debug check
+            failed_1 = df1['_date_obj'].isna().sum()
+            failed_2 = df2['_date_obj'].isna().sum()
+            if failed_1 > 0: st.toast(f"⚠️ Could not read {failed_1} dates in OUR file.", icon="⚠️")
+            if failed_2 > 0: st.toast(f"⚠️ Could not read {failed_2} dates in PROVIDER file.", icon="⚠️")
 
             # --- 2. PREPARE DATA ---
             data1 = pd.DataFrame()
@@ -158,8 +160,6 @@ if f1 and f2:
             # Keep display data
             data1['ID_OUR'] = df1[key_col_1].astype(str)
             data2['ID_PROV'] = df2[key_col_2].astype(str)
-            
-            # Store Parsed Date for logic
             data1['Date_OUR'] = df1['_date_obj']
             data2['Date_PROV'] = df2['_date_obj']
 
@@ -176,7 +176,7 @@ if f1 and f2:
             # --- 3. GLOBAL MERGE ---
             full_merge = pd.merge(data1, data2, on='_anchor', how='outer', indicator=True)
 
-            # --- 4. DATE FILTERING (CUT-OFF LOGIC) ---
+            # --- 4. DATE FILTERING (CUT-OFF) ---
             def check_month(dt):
                 if pd.isna(dt): return False
                 return (dt.month == target_month) and (dt.year == target_year)
@@ -184,7 +184,7 @@ if f1 and f2:
             full_merge['In_Month_OUR'] = full_merge['Date_OUR'].apply(check_month)
             full_merge['In_Month_PROV'] = full_merge['Date_PROV'].apply(check_month)
 
-            # A row appears in Main Report if it exists in the target month on EITHER side
+            # Active in Main Report if present in Target Month on EITHER side
             main_mask = full_merge['In_Month_OUR'] | full_merge['In_Month_PROV']
             df_main = full_merge[main_mask].copy()
 
@@ -194,17 +194,17 @@ if f1 and f2:
 
             def analyze_main(row):
                 errs = []
-                # Check Local Existence (Cut-off check)
-                exists_locally_our = row['In_Month_OUR']
-                exists_locally_prov = row['In_Month_PROV']
+                # Local Existence Check
+                loc_our = row['In_Month_OUR']
+                loc_prov = row['In_Month_PROV']
 
-                if exists_locally_our and not exists_locally_prov:
+                if loc_our and not loc_prov:
                     return ['Missing in PROVIDER (This Month)']
-                if not exists_locally_our and exists_locally_prov:
+                if not loc_our and loc_prov:
                     return ['Missing in OUR (This Month)']
                 
-                # If exists in both LOCALLY, check values
-                if exists_locally_our and exists_locally_prov:
+                # Compare Values
+                if loc_our and loc_prov:
                     if use_price:
                         p1 = float(row['Price_1']) if pd.notnull(row['Price_1']) else 0.0
                         p2 = float(row['Price_2']) if pd.notnull(row['Price_2']) else 0.0
@@ -218,30 +218,33 @@ if f1 and f2:
             df_main['Status'] = df_main['Error_List'].apply(lambda x: ", ".join(x))
 
             # --- 6. INVESTIGATION REPORT ---
-            # Any row in Main Report that is NOT OK needs investigation
             df_investigation = df_main[df_main['Status'] != 'OK'].copy()
             
             def investigate_row(row):
                 status = row['Status']
-                date_prov = row['Date_PROV']
-                date_our = row['Date_OUR']
                 
-                # Format for readability
-                d_prov_s = date_prov.strftime('%Y-%m-%d %H:%M') if pd.notnull(date_prov) else "None"
-                d_our_s = date_our.strftime('%Y-%m-%d %H:%M') if pd.notnull(date_our) else "None"
+                # Helpers to safely get date string or "Unknown"
+                d_prov = row['Date_PROV']
+                d_our = row['Date_OUR']
+                
+                # Logic: If NaT (Not a Time), we found the ID but don't know the date
+                if pd.notnull(d_prov): s_prov = d_prov.strftime('%Y-%m-%d')
+                else: s_prov = "Unknown Date"
+                
+                if pd.notnull(d_our): s_our = d_our.strftime('%Y-%m-%d')
+                else: s_our = "Unknown Date"
 
-                # If missing in Provider THIS MONTH
+                # Case 1: Missing in PROV (This Month)
                 if 'Missing in PROVIDER' in status:
-                    # Check Global Existence
                     if row['_merge'] == 'both':
-                        return f"✅ Found in PROV on {d_prov_s}"
+                        return f"✅ Found in PROV: {s_prov}"
                     else:
                         return "❌ Not found anywhere in PROV"
 
-                # If missing in OUR THIS MONTH
+                # Case 2: Missing in OUR (This Month)
                 if 'Missing in OUR' in status:
                     if row['_merge'] == 'both':
-                         return f"✅ Found in OUR on {d_our_s}"
+                         return f"✅ Found in OUR: {s_our}"
                     else:
                          return "❌ Not found anywhere in OUR"
 
@@ -279,7 +282,6 @@ if f1 and f2:
                 show_all = st.checkbox("Show all rows", value=False)
                 view_main = df_main.copy() if show_all else discrepancies.copy()
                 
-                # Prep Display
                 cols = ['ID_OUR', 'ID_PROV']
                 renames = {}
                 if use_price: cols.extend(['Price_1', 'Price_2', 'Diff'])
@@ -297,10 +299,8 @@ if f1 and f2:
                     use_container_width=True, hide_index=True
                 )
                 
-                # Download Main
                 csv_main = view_main[cols].rename(columns=renames).to_csv(index=False).encode('utf-8')
                 st.download_button("📥 Download Main Report", csv_main, "main_report.csv", "text/csv")
-                
             else:
                 st.warning("No transactions found for this month.")
 
@@ -313,9 +313,9 @@ if f1 and f2:
                 
                 cols_inv = ['ID_OUR', 'ID_PROV', 'Investigation', 'Status']
                 
-                # Add String Dates for context
-                df_inv['Date_OUR_Str'] = df_inv['Date_OUR'].dt.strftime('%Y-%m-%d').fillna("-")
-                df_inv['Date_PROV_Str'] = df_inv['Date_PROV'].dt.strftime('%Y-%m-%d').fillna("-")
+                # Context Dates
+                df_inv['Date_OUR_Str'] = df_inv['Date_OUR'].dt.strftime('%Y-%m-%d').fillna("Unknown")
+                df_inv['Date_PROV_Str'] = df_inv['Date_PROV'].dt.strftime('%Y-%m-%d').fillna("Unknown")
                 
                 cols_inv.insert(1, 'Date_OUR_Str')
                 cols_inv.insert(3, 'Date_PROV_Str')
