@@ -1,8 +1,8 @@
-=import streamlit as st
+import streamlit as st
 import pandas as pd
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Universal Reconcile v15", layout="wide", page_icon="🧩")
+st.set_page_config(page_title="Universal Reconcile v16", layout="wide", page_icon="🧩")
 
 # --- SESSION STATE INITIALIZATION ---
 if 'analysis_done' not in st.session_state:
@@ -55,7 +55,7 @@ if f1 and f2:
         # === A. ANCHOR COLUMN ===
         st.subheader("🔗 1. Anchor (Unique ID)")
         
-        anchor_help_text = "⚠️ IMPORTANT: This column must be UNIQUE (e.g. Order ID). Do NOT use dates or statuses here."
+        anchor_help_text = "⚠️ IMPORTANT: This column must be UNIQUE. Do NOT use dates or statuses here."
         
         k1, k2, k_buff = st.columns([2, 2, 3]) 
         with k1:
@@ -116,6 +116,28 @@ if f1 and f2:
         # --- RUN ANALYSIS ---
         if st.button("🚀 Run Analysis", type="primary"):
             
+            # --- 0. VALIDATION CHECK (ЗАЩИТА ОТ ДУРАКА) ---
+            # Проверяем, не выбрал ли юзер одну и ту же колонку для Якоря и Сравнения
+            errors_found = []
+            
+            if use_var_a:
+                if va_col_1 == key_col_1:
+                    errors_found.append(f"❌ Error: You selected '{va_col_1}' as both ANCHOR and USER (OUR). This is redundant.")
+                if va_col_2 == key_col_2:
+                    errors_found.append(f"❌ Error: You selected '{va_col_2}' as both ANCHOR and USER (PROVIDER). This is redundant.")
+            
+            if use_var_b:
+                if vb_col_1 == key_col_1:
+                    errors_found.append(f"❌ Error: You selected '{vb_col_1}' as both ANCHOR and ADDITIONAL (OUR).")
+                if vb_col_2 == key_col_2:
+                    errors_found.append(f"❌ Error: You selected '{vb_col_2}' as both ANCHOR and ADDITIONAL (PROVIDER).")
+            
+            # Если нашли ошибки — останавливаемся и показываем их
+            if errors_found:
+                for err in errors_found:
+                    st.error(err)
+                st.stop() # Остановка выполнения, чтобы не упало с KeyError
+
             # 1. Prepare Data
             data1 = pd.DataFrame()
             data2 = pd.DataFrame()
@@ -242,10 +264,8 @@ if f1 and f2:
                 
                 final_df_raw = final_df_raw.sort_values(by=['Status'], ascending=False)
 
-                # Строим список колонок
                 cols_to_show = ['Anchor_Disp_1', 'Anchor_Disp_2']
-                
-                # Словарь переименования для Якорей
+                # Возвращаем красивые названия колонок как в v14
                 rename_map = {
                     'Anchor_Disp_1': f"{key_col_1} (OUR)",
                     'Anchor_Disp_2': f"{key_col_2} (PROV)"
@@ -254,25 +274,17 @@ if f1 and f2:
                 if use_price: 
                     cols_to_show.extend(['Price_1', 'Price_2', 'Diff'])
                 
-                # --- ВАЖНОЕ ИСПРАВЛЕНИЕ: Добавляем префиксы к колонкам, чтобы избежать дублей ---
-                # Если пользователь выбрал ту же колонку для User, что и для Anchor,
-                # мы переименуем её в "[User] col_name", чтобы Pandas не ругался на дубликаты.
-                
                 if use_var_a: 
-                    new_name_1 = f"[User] {va_col_1} (OUR)"
-                    new_name_2 = f"[User] {va_col_2} (PROV)"
-                    final_df_raw.rename(columns={'User_1': new_name_1, 'User_2': new_name_2}, inplace=True)
-                    cols_to_show.extend([new_name_1, new_name_2])
+                    # Тут мы используем имена колонок без префиксов, так как валидация выше не даст им совпасть с якорем
+                    final_df_raw.rename(columns={'User_1': f"{va_col_1} (OUR)", 'User_2': f"{va_col_2} (PROV)"}, inplace=True)
+                    cols_to_show.extend([f"{va_col_1} (OUR)", f"{va_col_2} (PROV)"])
                     
                 if use_var_b: 
-                    new_name_b1 = f"[Add'l] {vb_col_1} (OUR)"
-                    new_name_b2 = f"[Add'l] {vb_col_2} (PROV)"
-                    final_df_raw.rename(columns={'Add_1': new_name_b1, 'Add_2': new_name_b2}, inplace=True)
-                    cols_to_show.extend([new_name_b1, new_name_b2])
+                    final_df_raw.rename(columns={'Add_1': f"{vb_col_1} (OUR)", 'Add_2': f"{vb_col_2} (PROV)"}, inplace=True)
+                    cols_to_show.extend([f"{vb_col_1} (OUR)", f"{vb_col_2} (PROV)"])
                 
                 cols_to_show.append('Status')
                 
-                # Финальный DF
                 download_df = final_df_raw[cols_to_show].rename(columns=rename_map)
                 csv = download_df.to_csv(index=False).encode('utf-8')
                 st.download_button("📥 Download Full Report (CSV)", csv, "report.csv", "text/csv", type="primary")
