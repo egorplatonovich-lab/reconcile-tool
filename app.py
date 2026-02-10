@@ -3,7 +3,7 @@ import pandas as pd
 import re
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Universal Reconcile v22", layout="wide", page_icon="🧩")
+st.set_page_config(page_title="Universal Reconcile v23", layout="wide", page_icon="🧩")
 
 # --- SESSION STATE ---
 if 'analysis_done' not in st.session_state: st.session_state['analysis_done'] = False
@@ -36,12 +36,15 @@ def clean_compare_string(series):
 
 def nuclear_date_parser(val):
     """
-    Regex-based parser. Ignores timezones and garbage.
-    Focuses purely on extracting YYYY-MM-DD.
+    The Robust Regex Parser from v21.
+    Extracts YYYY-MM-DD or DD.MM.YYYY from any string garbage.
     """
     s = str(val).strip()
     
-    # 1. Try finding YYYY-MM-DD
+    # 0. Clean common artifacts (T, Z) just in case
+    s = s.replace('T', ' ').replace('Z', '')
+    
+    # 1. Try finding YYYY-MM-DD (ISO)
     iso_match = re.search(r'(\d{4}-\d{2}-\d{2})', s)
     if iso_match:
         try:
@@ -49,7 +52,7 @@ def nuclear_date_parser(val):
         except:
             pass
             
-    # 2. Try finding DD.MM.YYYY
+    # 2. Try finding DD.MM.YYYY (Euro)
     euro_match = re.search(r'(\d{2}\.\d{2}\.\d{4})', s)
     if euro_match:
         try:
@@ -62,6 +65,13 @@ def nuclear_date_parser(val):
         return pd.to_datetime(s, errors='coerce')
     except:
         return pd.NaT
+
+def find_date_col(cols):
+    """Auto-detect columns that look like dates"""
+    for c in cols:
+        if 'date' in c.lower() or 'time' in c.lower() or 'created' in c.lower() or 'at' in c.lower():
+            return c
+    return cols[0]
 
 # --- 1. UPLOAD ---
 c1, c2 = st.columns(2)
@@ -88,10 +98,14 @@ if f1 and f2:
             target_month_name = st.selectbox("Target Month", list(months.values()))
             target_month = list(months.keys())[list(months.values()).index(target_month_name)]
         
+        # Auto-select likely date columns
+        idx_d1 = list(df1.columns).index(find_date_col(df1.columns))
+        idx_d2 = list(df2.columns).index(find_date_col(df2.columns))
+
         with col_per3:
-            date_col_1 = st.selectbox("Date Column (OUR)", df1.columns)
+            date_col_1 = st.selectbox("Date Column (OUR)", df1.columns, index=idx_d1)
         with col_per4:
-            date_col_2 = st.selectbox("Date Column (PROVIDER)", df2.columns)
+            date_col_2 = st.selectbox("Date Column (PROVIDER)", df2.columns, index=idx_d2)
 
         st.write("")
         k1, k2 = st.columns(2)
@@ -129,9 +143,21 @@ if f1 and f2:
         # --- RUN ANALYSIS ---
         if st.button("🚀 Run Analysis", type="primary"):
             
-            # 1. PARSE DATES (Nuclear)
+            # 1. PARSE DATES (The Nuclear Option from v21)
+            # Using apply() to ensure row-by-row regex processing
             df1['_date_obj'] = df1[date_col_1].apply(nuclear_date_parser)
             df2['_date_obj'] = df2[date_col_2].apply(nuclear_date_parser)
+
+            # Validation: Check if we parsed *anything*
+            valid_1 = df1['_date_obj'].notna().sum()
+            valid_2 = df2['_date_obj'].notna().sum()
+            
+            if valid_1 == 0:
+                st.error(f"❌ Error: Could not parse any dates in OUR file column '{date_col_1}'. Check if you selected the right column.")
+                st.stop()
+            if valid_2 == 0:
+                st.error(f"❌ Error: Could not parse any dates in PROVIDER file column '{date_col_2}'. Check if you selected the right column.")
+                st.stop()
 
             # 2. PREPARE DATA
             data1 = pd.DataFrame()
@@ -208,12 +234,12 @@ if f1 and f2:
                 s_prov = d_prov.strftime('%Y-%m-%d') if pd.notnull(d_prov) else "Unknown"
                 s_our = d_our.strftime('%Y-%m-%d') if pd.notnull(d_our) else "Unknown"
 
-                # If it's missing in PROV locally, check global
+                # If missing in PROV locally, check global
                 if 'Missing in PROVIDER' in status:
                     if row['_merge'] == 'both': return f"✅ Found in PROV: {s_prov}"
                     else: return "❌ Not found anywhere in PROV"
 
-                # If it's missing in OUR locally, check global
+                # If missing in OUR locally, check global
                 if 'Missing in OUR' in status:
                     if row['_merge'] == 'both': return f"✅ Found in OUR: {s_our}"
                     else: return "❌ Not found anywhere in OUR"
@@ -256,28 +282,32 @@ if f1 and f2:
                 # Filter Data
                 view_main = df_main.copy() if show_all else discrepancies.copy()
                 
-                # Columns
-                cols = ['ID_OUR', 'ID_PROV']
-                renames = {}
-                if use_price: cols.extend(['Price_1', 'Price_2', 'Diff'])
-                if use_var_a: 
-                    cols.extend(['User_1', 'User_2'])
-                    renames.update({'User_1': f"{va_col_1} (OUR)", 'User_2': f"{va_col_2} (PROV)"})
-                if use_var_b:
-                    cols.extend(['Add_1', 'Add_2'])
-                    renames.update({'Add_1': f"{vb_col_1} (OUR)", 'Add_2': f"{vb_col_2} (PROV)"})
-                
-                cols.append('Status')
-                
-                # Download Button
-                csv_main = view_main[cols].rename(columns=renames).to_csv(index=False).encode('utf-8')
-                st.download_button("📥 Download Report (CSV)", csv_main, "main_report.csv", "text/csv")
+                if not view_main.empty:
+                    # Columns
+                    cols = ['ID_OUR', 'ID_PROV']
+                    renames = {}
+                    if use_price: cols.extend(['Price_1', 'Price_2', 'Diff'])
+                    if use_var_a: 
+                        cols.extend(['User_1', 'User_2'])
+                        renames.update({'User_1': f"{va_col_1} (OUR)", 'User_2': f"{va_col_2} (PROV)"})
+                    if use_var_b:
+                        cols.extend(['Add_1', 'Add_2'])
+                        renames.update({'Add_1': f"{vb_col_1} (OUR)", 'Add_2': f"{vb_col_2} (PROV)"})
+                    
+                    cols.append('Status')
+                    
+                    # Download Button
+                    csv_main = view_main[cols].rename(columns=renames).to_csv(index=False).encode('utf-8')
+                    st.download_button("📥 Download Report (CSV)", csv_main, "main_report.csv", "text/csv")
 
-                # Table
-                st.dataframe(
-                    view_main[cols].rename(columns=renames).fillna("None").style.map(color_none).map(color_status, subset=['Status']),
-                    use_container_width=True, hide_index=True
-                )
+                    # Table
+                    st.dataframe(
+                        view_main[cols].rename(columns=renames).fillna("None").style.map(color_none).map(color_status, subset=['Status']),
+                        use_container_width=True, hide_index=True
+                    )
+                else:
+                    if show_all: st.warning("No rows found.")
+                    else: st.success("✅ Clean! No discrepancies.")
             else:
                 st.warning("No transactions found for this month.")
 
