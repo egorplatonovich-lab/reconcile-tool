@@ -3,7 +3,7 @@ import pandas as pd
 import re
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Universal Reconcile v26", layout="wide", page_icon="🧩")
+st.set_page_config(page_title="Universal Reconcile v27", layout="wide", page_icon="🧩")
 
 # --- SESSION STATE ---
 if 'analysis_done' not in st.session_state: st.session_state['analysis_done'] = False
@@ -29,7 +29,6 @@ def clean_currency(series):
     return series.astype(str).str.replace(r'[^\d.,-]', '', regex=True).str.replace(',', '.').astype(float)
 
 def clean_string_key(series):
-    # AGGRESSIVE KEY CLEANING (v25 Logic)
     s = series.astype(str).fillna("")
     s = s.str.strip().str.lower()
     s = s.str.replace(r'\.0$', '', regex=True)
@@ -39,7 +38,6 @@ def clean_compare_string(series):
     return series.astype(str).fillna("").str.strip()
 
 def nuclear_date_parser(val):
-    # NUCLEAR DATE PARSER (v21/v23 Logic)
     s = str(val).strip()
     s = s.replace('T', ' ').replace('Z', '')
     
@@ -136,10 +134,10 @@ if f1 and f2:
             df2['_date_obj'] = df2[date_col_2].apply(nuclear_date_parser)
             
             if df1['_date_obj'].notna().sum() == 0:
-                st.error(f"❌ Could not parse dates in OUR file '{date_col_1}'.")
+                st.error(f"❌ Error: Dates not parsed in OUR file.")
                 st.stop()
             if df2['_date_obj'].notna().sum() == 0:
-                st.error(f"❌ Could not parse dates in PROVIDER file '{date_col_2}'.")
+                st.error(f"❌ Error: Dates not parsed in PROVIDER file.")
                 st.stop()
 
             # 2. PREPARE DATA
@@ -178,18 +176,37 @@ if f1 and f2:
             main_mask = full_merge['In_Month_OUR'] | full_merge['In_Month_PROV']
             df_main = full_merge[main_mask].copy()
 
-            # 5. ANALYZE MAIN
+            # 5. ANALYZE MAIN (NEW LOGIC)
             if use_price:
                 df_main['Diff'] = (df_main['Price_1'].fillna(0) - df_main['Price_2'].fillna(0)).round(2)
 
             def analyze_main(row):
                 errs = []
+                
+                # Check Local Existence (in this month)
                 loc_our = row['In_Month_OUR']
                 loc_prov = row['In_Month_PROV']
-
-                if loc_our and not loc_prov: return ['Missing in PROVIDER (This Month)']
-                if not loc_our and loc_prov: return ['Missing in OUR (This Month)']
                 
+                # Check Global Existence (Merge indicator: left_only, right_only, both)
+                global_merge = row['_merge']
+
+                # --- MISSING LOGIC UPDATED ---
+                
+                # Case 1: Active in OUR, Missing in PROV (This Month)
+                if loc_our and not loc_prov:
+                    if global_merge == 'left_only':
+                        return ['❌ TRULY MISSING in PROV (Globally)']
+                    else:
+                        return ['📅 Date Cut-off (Found in PROV other month)']
+
+                # Case 2: Active in PROV, Missing in OUR (This Month)
+                if not loc_our and loc_prov:
+                    if global_merge == 'right_only':
+                        return ['❌ TRULY MISSING in OUR (Globally)']
+                    else:
+                        return ['📅 Date Cut-off (Found in OUR other month)']
+                
+                # Case 3: Matched in Month, Check Values
                 if loc_our and loc_prov:
                     if use_price:
                         p1 = float(row['Price_1']) if pd.notnull(row['Price_1']) else 0.0
@@ -203,26 +220,21 @@ if f1 and f2:
             df_main['Error_List'] = df_main.apply(analyze_main, axis=1)
             df_main['Status'] = df_main['Error_List'].apply(lambda x: ", ".join(x))
 
-            # 6. INVESTIGATION
+            # 6. INVESTIGATION (Updated for new status names)
             df_investigation = df_main[df_main['Status'] != 'OK'].copy()
             
             def investigate_row(row):
                 status = row['Status']
-                d_prov = row['Date_PROV']
-                d_our = row['Date_OUR']
+                s_prov = row['Date_PROV'].strftime('%Y-%m-%d') if pd.notnull(row['Date_PROV']) else "Unknown"
+                s_our = row['Date_OUR'].strftime('%Y-%m-%d') if pd.notnull(row['Date_OUR']) else "Unknown"
+
+                if 'TRULY MISSING in PROV' in status: return "❌ Not found anywhere in PROV"
+                if 'Date Cut-off' in status and 'PROV' in status: return f"✅ Found in PROV on {s_prov}"
                 
-                s_prov = d_prov.strftime('%Y-%m-%d') if pd.notnull(d_prov) else "Unknown"
-                s_our = d_our.strftime('%Y-%m-%d') if pd.notnull(d_our) else "Unknown"
+                if 'TRULY MISSING in OUR' in status: return "❌ Not found anywhere in OUR"
+                if 'Date Cut-off' in status and 'OUR' in status: return f"✅ Found in OUR on {s_our}"
 
-                if 'Missing in PROVIDER' in status:
-                    if row['_merge'] == 'both': return f"✅ Found in PROV on {s_prov}"
-                    else: return "❌ Not found anywhere in PROV"
-
-                if 'Missing in OUR' in status:
-                    if row['_merge'] == 'both': return f"✅ Found in OUR on {s_our}"
-                    else: return "❌ Not found anywhere in OUR"
-
-                return "⚠️ Mismatch (Dates OK)"
+                return "⚠️ Content Mismatch (Dates OK)"
 
             if not df_investigation.empty:
                 df_investigation['Investigation'] = df_investigation.apply(investigate_row, axis=1)
@@ -236,22 +248,31 @@ if f1 and f2:
             df_main = st.session_state['main_df']
             df_inv = st.session_state['investigation_df']
             
+            # Styling for new statuses
+            def color_status(val): 
+                val_str = str(val)
+                if 'OK' in val_str: return 'color: #2e7d32; font-weight: bold;' # Green
+                if 'TRULY MISSING' in val_str: return 'color: #d32f2f; font-weight: bold;' # Red
+                if 'Date Cut-off' in val_str: return 'color: #ef6c00; font-weight: bold;' # Orange
+                return 'color: #d32f2f; font-weight: bold;'
+
             def color_none(val): return 'color: #d32f2f; font-weight: bold;' if str(val) == "None" else ''
-            def color_status(val): return 'color: #2e7d32; font-weight: bold;' if 'OK' in str(val) else 'color: #d32f2f; font-weight: bold;'
 
             st.header(f"📊 Main Report: {target_month_name} {target_year}")
             
             if not df_main.empty:
                 discrepancies = df_main[df_main['Status'] != 'OK']
                 
-                # --- METRICS CALCULATIONS ---
-                # 1. Total Rows
+                # --- METRICS (UPDATED) ---
                 total_cnt = len(df_main)
                 
-                # 2. Missing Rows (Date errors)
-                missing_cnt = discrepancies['Status'].str.contains('Missing').sum()
+                # 1. Truly Missing (Red)
+                truly_missing = discrepancies['Status'].str.contains('TRULY MISSING').sum()
                 
-                # 3. Price Errors & Net Diff
+                # 2. Date Cut-off (Orange)
+                date_cutoff = discrepancies['Status'].str.contains('Date Cut-off').sum()
+                
+                # 3. Price
                 price_cnt = 0
                 net_diff = 0.0
                 if use_price:
@@ -259,23 +280,23 @@ if f1 and f2:
                     price_cnt = len(price_errs)
                     net_diff = price_errs['Diff'].sum()
                 
-                # 4. Content Errors
+                # 4. Content
                 content_cnt = discrepancies['Status'].str.contains('User|Add\'l').sum()
 
-                # --- DISPLAY METRICS ---
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Total Rows", total_cnt)
-                m2.metric("Missing (Date/Exist)", missing_cnt, delta_color="inverse")
+                # 5 Columns Layout
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("Rows (In Period)", total_cnt)
+                m2.metric("❌ TRULY MISSING", truly_missing, delta_color="inverse")
+                m3.metric("📅 Date Mismatches", date_cutoff, delta_color="off")
                 
-                # Display Price Count with SUM underneath
                 if use_price:
-                    m3.metric("Price Mismatches", price_cnt, delta=f"{net_diff:,.2f}")
+                    m4.metric("Price Mismatches", price_cnt, delta=f"{net_diff:,.2f}")
                 else:
-                    m3.metric("Price Mismatches", "N/A")
+                    m4.metric("Price Mismatches", "N/A")
                     
-                m4.metric("Content Mismatches", content_cnt, delta_color="inverse")
+                m5.metric("Content Mismatches", content_cnt, delta_color="inverse")
 
-                # --- VIEW CONTROLS ---
+                # --- VIEW ---
                 c_view, c_down = st.columns([1, 4])
                 with c_view: show_all = st.checkbox("Show all rows", value=False)
                 
