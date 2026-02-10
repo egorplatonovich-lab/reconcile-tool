@@ -1,8 +1,8 @@
-import streamlit as st
+=import streamlit as st
 import pandas as pd
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Universal Reconcile v14", layout="wide", page_icon="🧩")
+st.set_page_config(page_title="Universal Reconcile v15", layout="wide", page_icon="🧩")
 
 # --- SESSION STATE INITIALIZATION ---
 if 'analysis_done' not in st.session_state:
@@ -219,7 +219,7 @@ if f1 and f2:
             else:
                 m_cols[2].metric("Price Mismatches", "N/A")
                 
-            # Content Mismatches (User + Additional)
+            # Content Mismatches
             other_err = 0
             if use_var_a or use_var_b:
                 if use_var_a: other_err += discrepancies['Status'].str.contains('User Mismatch').sum()
@@ -242,7 +242,10 @@ if f1 and f2:
                 
                 final_df_raw = final_df_raw.sort_values(by=['Status'], ascending=False)
 
+                # Строим список колонок
                 cols_to_show = ['Anchor_Disp_1', 'Anchor_Disp_2']
+                
+                # Словарь переименования для Якорей
                 rename_map = {
                     'Anchor_Disp_1': f"{key_col_1} (OUR)",
                     'Anchor_Disp_2': f"{key_col_2} (PROV)"
@@ -251,17 +254,25 @@ if f1 and f2:
                 if use_price: 
                     cols_to_show.extend(['Price_1', 'Price_2', 'Diff'])
                 
+                # --- ВАЖНОЕ ИСПРАВЛЕНИЕ: Добавляем префиксы к колонкам, чтобы избежать дублей ---
+                # Если пользователь выбрал ту же колонку для User, что и для Anchor,
+                # мы переименуем её в "[User] col_name", чтобы Pandas не ругался на дубликаты.
+                
                 if use_var_a: 
-                    # Rename internal columns to readable ones
-                    final_df_raw.rename(columns={'User_1': f"{va_col_1} (OUR)", 'User_2': f"{va_col_2} (PROV)"}, inplace=True)
-                    cols_to_show.extend([f"{va_col_1} (OUR)", f"{va_col_2} (PROV)"])
+                    new_name_1 = f"[User] {va_col_1} (OUR)"
+                    new_name_2 = f"[User] {va_col_2} (PROV)"
+                    final_df_raw.rename(columns={'User_1': new_name_1, 'User_2': new_name_2}, inplace=True)
+                    cols_to_show.extend([new_name_1, new_name_2])
                     
                 if use_var_b: 
-                    final_df_raw.rename(columns={'Add_1': f"{vb_col_1} (OUR)", 'Add_2': f"{vb_col_2} (PROV)"}, inplace=True)
-                    cols_to_show.extend([f"{vb_col_1} (OUR)", f"{vb_col_2} (PROV)"])
+                    new_name_b1 = f"[Add'l] {vb_col_1} (OUR)"
+                    new_name_b2 = f"[Add'l] {vb_col_2} (PROV)"
+                    final_df_raw.rename(columns={'Add_1': new_name_b1, 'Add_2': new_name_b2}, inplace=True)
+                    cols_to_show.extend([new_name_b1, new_name_b2])
                 
                 cols_to_show.append('Status')
                 
+                # Финальный DF
                 download_df = final_df_raw[cols_to_show].rename(columns=rename_map)
                 csv = download_df.to_csv(index=False).encode('utf-8')
                 st.download_button("📥 Download Full Report (CSV)", csv, "report.csv", "text/csv", type="primary")
