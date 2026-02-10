@@ -3,7 +3,7 @@ import pandas as pd
 import re
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Universal Reconcile v27", layout="wide", page_icon="🧩")
+st.set_page_config(page_title="Universal Reconcile v28", layout="wide", page_icon="🧩")
 
 # --- SESSION STATE ---
 if 'analysis_done' not in st.session_state: st.session_state['analysis_done'] = False
@@ -119,10 +119,13 @@ if f1 and f2:
 
         use_var_b = st.checkbox("🧩 Compare Additional", value=False)
         vb_col_1, vb_col_2 = None, None
+        # Dynamic Name Variable
+        add_field_name = "Additional" 
         if use_var_b:
             vb1, vb2 = st.columns(2)
             vb_col_1 = vb1.selectbox("Add'l (OUR)", df1.columns, key="vb1")
             vb_col_2 = vb2.selectbox("Add'l (PROVIDER)", df2.columns, key="vb2")
+            add_field_name = vb_col_1 # Capture name for column header
 
         st.markdown("---")
 
@@ -176,70 +179,110 @@ if f1 and f2:
             main_mask = full_merge['In_Month_OUR'] | full_merge['In_Month_PROV']
             df_main = full_merge[main_mask].copy()
 
-            # 5. ANALYZE MAIN (NEW LOGIC)
+            # 5. ANALYZE MAIN (MATRIX LOGIC)
             if use_price:
                 df_main['Diff'] = (df_main['Price_1'].fillna(0) - df_main['Price_2'].fillna(0)).round(2)
 
-            def analyze_main(row):
-                errs = []
+            def analyze_row_matrix(row):
+                # Init Statuses
+                res = {
+                    'Status_Exist': 'OK',
+                    'Status_Price': '',
+                    'Status_User': '',
+                    f'Status_{add_field_name}': ''
+                }
                 
-                # Check Local Existence (in this month)
                 loc_our = row['In_Month_OUR']
                 loc_prov = row['In_Month_PROV']
-                
-                # Check Global Existence (Merge indicator: left_only, right_only, both)
                 global_merge = row['_merge']
-
-                # --- MISSING LOGIC UPDATED ---
                 
-                # Case 1: Active in OUR, Missing in PROV (This Month)
+                # --- 1. EXISTENCE CHECK ---
+                is_present_globally = False
+                
                 if loc_our and not loc_prov:
                     if global_merge == 'left_only':
-                        return ['❌ TRULY MISSING in PROV (Globally)']
+                        res['Status_Exist'] = '❌ TRULY MISSING in PROV'
+                        return pd.Series(res) # Return early, can't compare content
                     else:
-                        return ['📅 Date Cut-off (Found in PROV other month)']
+                        res['Status_Exist'] = '📅 Date Cut-off (Found in PROV)'
+                        is_present_globally = True
 
-                # Case 2: Active in PROV, Missing in OUR (This Month)
-                if not loc_our and loc_prov:
+                elif not loc_our and loc_prov:
                     if global_merge == 'right_only':
-                        return ['❌ TRULY MISSING in OUR (Globally)']
+                        res['Status_Exist'] = '❌ TRULY MISSING in OUR'
+                        return pd.Series(res) # Return early
                     else:
-                        return ['📅 Date Cut-off (Found in OUR other month)']
+                        res['Status_Exist'] = '📅 Date Cut-off (Found in OUR)'
+                        is_present_globally = True
                 
-                # Case 3: Matched in Month, Check Values
-                if loc_our and loc_prov:
+                else:
+                    # Found in both this month
+                    is_present_globally = True
+
+                # --- 2. CONTENT CHECK (If present globally) ---
+                if is_present_globally:
+                    # Price
                     if use_price:
                         p1 = float(row['Price_1']) if pd.notnull(row['Price_1']) else 0.0
                         p2 = float(row['Price_2']) if pd.notnull(row['Price_2']) else 0.0
-                        if abs(p1 - p2) > 0.01: errs.append('Price Mismatch')
-                    if use_var_a and str(row['User_1']) != str(row['User_2']): errs.append('User Mismatch')
-                    if use_var_b and str(row['Add_1']) != str(row['Add_2']): errs.append('Add\'l Mismatch')
-                
-                return errs if errs else ['OK']
+                        if abs(p1 - p2) > 0.01:
+                            res['Status_Price'] = 'Price Mismatch'
+                        else:
+                            res['Status_Price'] = 'OK'
+                    
+                    # User
+                    if use_var_a:
+                        if str(row['User_1']) != str(row['User_2']):
+                            res['Status_User'] = 'User Mismatch'
+                        else:
+                            res['Status_User'] = 'OK'
 
-            df_main['Error_List'] = df_main.apply(analyze_main, axis=1)
-            df_main['Status'] = df_main['Error_List'].apply(lambda x: ", ".join(x))
+                    # Additional (Dynamic Name)
+                    if use_var_b:
+                        if str(row['Add_1']) != str(row['Add_2']):
+                            res[f'Status_{add_field_name}'] = f'{add_field_name} Mismatch'
+                        else:
+                            res[f'Status_{add_field_name}'] = 'OK'
 
-            # 6. INVESTIGATION (Updated for new status names)
-            df_investigation = df_main[df_main['Status'] != 'OK'].copy()
+                return pd.Series(res)
+
+            # Apply Matrix Analysis
+            status_cols = df_main.apply(analyze_row_matrix, axis=1)
+            df_main = pd.concat([df_main, status_cols], axis=1)
+
+            # Define Logic for "Is this row clean?"
+            # A row is clean if Exist is OK/Cut-off AND all other statuses are OK (or empty)
+            def is_dirty(row):
+                if 'TRULY MISSING' in row['Status_Exist']: return True
+                if 'Date Cut-off' in row['Status_Exist']: return True # User wants to see these
+                if use_price and 'Mismatch' in str(row.get('Status_Price', '')): return True
+                if use_var_a and 'Mismatch' in str(row.get('Status_User', '')): return True
+                if use_var_b and 'Mismatch' in str(row.get(f'Status_{add_field_name}', '')): return True
+                return False
+
+            df_main['Is_Error'] = df_main.apply(is_dirty, axis=1)
+            
+            # Save to session
+            st.session_state['main_df'] = df_main
+            
+            # Investigation Logic (Simplified: Just missing items)
+            df_investigation = df_main[df_main['Status_Exist'].str.contains('TRULY MISSING') | df_main['Status_Exist'].str.contains('Date Cut-off')].copy()
             
             def investigate_row(row):
-                status = row['Status']
+                status = row['Status_Exist']
                 s_prov = row['Date_PROV'].strftime('%Y-%m-%d') if pd.notnull(row['Date_PROV']) else "Unknown"
                 s_our = row['Date_OUR'].strftime('%Y-%m-%d') if pd.notnull(row['Date_OUR']) else "Unknown"
 
                 if 'TRULY MISSING in PROV' in status: return "❌ Not found anywhere in PROV"
-                if 'Date Cut-off' in status and 'PROV' in status: return f"✅ Found in PROV on {s_prov}"
+                if 'Found in PROV' in status: return f"✅ Found in PROV on {s_prov}"
                 
                 if 'TRULY MISSING in OUR' in status: return "❌ Not found anywhere in OUR"
-                if 'Date Cut-off' in status and 'OUR' in status: return f"✅ Found in OUR on {s_our}"
-
-                return "⚠️ Content Mismatch (Dates OK)"
+                if 'Found in OUR' in status: return f"✅ Found in OUR on {s_our}"
+                return ""
 
             if not df_investigation.empty:
                 df_investigation['Investigation'] = df_investigation.apply(investigate_row, axis=1)
             
-            st.session_state['main_df'] = df_main
             st.session_state['investigation_df'] = df_investigation
             st.session_state['analysis_done'] = True
 
@@ -248,55 +291,49 @@ if f1 and f2:
             df_main = st.session_state['main_df']
             df_inv = st.session_state['investigation_df']
             
-            # Styling for new statuses
-            def color_status(val): 
-                val_str = str(val)
-                if 'OK' in val_str: return 'color: #2e7d32; font-weight: bold;' # Green
-                if 'TRULY MISSING' in val_str: return 'color: #d32f2f; font-weight: bold;' # Red
-                if 'Date Cut-off' in val_str: return 'color: #ef6c00; font-weight: bold;' # Orange
-                return 'color: #d32f2f; font-weight: bold;'
+            # Styling
+            def color_cells(val):
+                s = str(val)
+                if 'TRULY MISSING' in s: return 'color: #d32f2f; font-weight: bold;'
+                if 'Date Cut-off' in s: return 'color: #ef6c00; font-weight: bold;'
+                if 'Mismatch' in s: return 'color: #d32f2f; font-weight: bold;'
+                if s == 'OK': return 'color: #2e7d32; font-weight: bold;'
+                return ''
 
             def color_none(val): return 'color: #d32f2f; font-weight: bold;' if str(val) == "None" else ''
 
             st.header(f"📊 Main Report: {target_month_name} {target_year}")
             
             if not df_main.empty:
-                discrepancies = df_main[df_main['Status'] != 'OK']
+                discrepancies = df_main[df_main['Is_Error'] == True]
                 
-                # --- METRICS (UPDATED) ---
+                # --- METRICS ---
                 total_cnt = len(df_main)
+                truly_missing = df_main['Status_Exist'].str.contains('TRULY MISSING').sum()
+                date_cutoff = df_main['Status_Exist'].str.contains('Date Cut-off').sum()
                 
-                # 1. Truly Missing (Red)
-                truly_missing = discrepancies['Status'].str.contains('TRULY MISSING').sum()
-                
-                # 2. Date Cut-off (Orange)
-                date_cutoff = discrepancies['Status'].str.contains('Date Cut-off').sum()
-                
-                # 3. Price
                 price_cnt = 0
                 net_diff = 0.0
                 if use_price:
-                    price_errs = discrepancies[discrepancies['Status'].str.contains('Price')]
+                    # Count price mismatches only if existence is not missing
+                    price_errs = discrepancies[discrepancies['Status_Price'] == 'Price Mismatch']
                     price_cnt = len(price_errs)
                     net_diff = price_errs['Diff'].sum()
                 
-                # 4. Content
-                content_cnt = discrepancies['Status'].str.contains('User|Add\'l').sum()
+                content_cnt = 0
+                if use_var_a: content_cnt += discrepancies['Status_User'].str.contains('Mismatch').sum()
+                if use_var_b: content_cnt += discrepancies[f'Status_{add_field_name}'].str.contains('Mismatch').sum()
 
-                # 5 Columns Layout
+                # Display Metrics
                 m1, m2, m3, m4, m5 = st.columns(5)
                 m1.metric("Rows (In Period)", total_cnt)
                 m2.metric("❌ TRULY MISSING", truly_missing, delta_color="inverse")
                 m3.metric("📅 Date Mismatches", date_cutoff, delta_color="off")
-                
-                if use_price:
-                    m4.metric("Price Mismatches", price_cnt, delta=f"{net_diff:,.2f}")
-                else:
-                    m4.metric("Price Mismatches", "N/A")
-                    
+                if use_price: m4.metric("Price Mismatches", price_cnt, delta=f"{net_diff:,.2f}")
+                else: m4.metric("Price Mismatches", "N/A")
                 m5.metric("Content Mismatches", content_cnt, delta_color="inverse")
 
-                # --- VIEW ---
+                # --- TABLE CONFIG ---
                 c_view, c_down = st.columns([1, 4])
                 with c_view: show_all = st.checkbox("Show all rows", value=False)
                 
@@ -306,23 +343,38 @@ if f1 and f2:
                     view_main['Date_OUR_Str'] = view_main['Date_OUR'].dt.strftime('%Y-%m-%d').fillna("None")
                     view_main['Date_PROV_Str'] = view_main['Date_PROV'].dt.strftime('%Y-%m-%d').fillna("None")
                     
+                    # Dynamic Columns Construction
                     cols = ['ID_OUR', 'ID_PROV', 'Date_OUR_Str', 'Date_PROV_Str']
-                    renames = {'Date_OUR_Str': 'Date (OUR)', 'Date_PROV_Str': 'Date (PROV)'}
+                    renames = {'Date_OUR_Str': 'Date (OUR)', 'Date_PROV_Str': 'Date (PROV)', 'Status_Exist': 'Status (Existence)'}
                     
-                    if use_price: cols.extend(['Price_1', 'Price_2', 'Diff'])
+                    # 1. Existence Status
+                    cols.append('Status_Exist')
+
+                    # 2. Price
+                    if use_price: 
+                        cols.extend(['Price_1', 'Price_2', 'Diff', 'Status_Price'])
+                        renames['Status_Price'] = 'Status (Price)'
+                    
+                    # 3. User
                     if use_var_a: 
-                        cols.extend(['User_1', 'User_2'])
-                        renames.update({'User_1': f"{va_col_1} (OUR)", 'User_2': f"{va_col_2} (PROV)"})
+                        cols.extend(['User_1', 'User_2', 'Status_User'])
+                        renames.update({'User_1': f"{va_col_1} (OUR)", 'User_2': f"{va_col_2} (PROV)", 'Status_User': 'Status (User)'})
+                    
+                    # 4. Additional
                     if use_var_b:
-                        cols.extend(['Add_1', 'Add_2'])
-                        renames.update({'Add_1': f"{vb_col_1} (OUR)", 'Add_2': f"{vb_col_2} (PROV)"})
+                        col_stat_dyn = f'Status_{add_field_name}'
+                        cols.extend(['Add_1', 'Add_2', col_stat_dyn])
+                        renames.update({'Add_1': f"{vb_col_1} (OUR)", 'Add_2': f"{vb_col_2} (PROV)", col_stat_dyn: f'Status ({add_field_name})'})
                     
-                    cols.append('Status')
-                    
+                    # Download
                     csv_main = view_main[cols].rename(columns=renames).to_csv(index=False).encode('utf-8')
                     st.download_button("📥 Download Report (CSV)", csv_main, "main_report.csv", "text/csv")
 
-                    st.dataframe(view_main[cols].rename(columns=renames).fillna("None").style.map(color_none).map(color_status, subset=['Status']), use_container_width=True, hide_index=True)
+                    # Display
+                    st.dataframe(
+                        view_main[cols].rename(columns=renames).fillna("None").style.map(color_none).map(color_cells),
+                        use_container_width=True, hide_index=True
+                    )
                 else:
                     if show_all: st.warning("No rows found.")
                     else: st.success("✅ Clean! No discrepancies.")
@@ -333,7 +385,7 @@ if f1 and f2:
 
             st.header("🕵️ Investigation (Lost & Found)")
             if not df_inv.empty:
-                cols_inv = ['ID_OUR', 'ID_PROV', 'Investigation', 'Status']
+                cols_inv = ['ID_OUR', 'ID_PROV', 'Investigation', 'Status_Exist']
                 
                 df_inv['Date_OUR_Str'] = df_inv['Date_OUR'].dt.strftime('%Y-%m-%d').fillna("Unknown")
                 df_inv['Date_PROV_Str'] = df_inv['Date_PROV'].dt.strftime('%Y-%m-%d').fillna("Unknown")
@@ -341,7 +393,7 @@ if f1 and f2:
                 cols_inv.insert(1, 'Date_OUR_Str')
                 cols_inv.insert(3, 'Date_PROV_Str')
                 
-                renames_inv = {'Date_OUR_Str': 'Date (OUR)', 'Date_PROV_Str': 'Date (PROV)', 'Investigation': 'Global Search Result'}
+                renames_inv = {'Date_OUR_Str': 'Date (OUR)', 'Date_PROV_Str': 'Date (PROV)', 'Investigation': 'Global Search Result', 'Status_Exist': 'Original Status'}
 
                 def color_res(val):
                     if '✅' in str(val): return 'color: #2e7d32; font-weight: bold;'
