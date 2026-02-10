@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Universal Reconcile v13", layout="wide", page_icon="🧩")
+st.set_page_config(page_title="Universal Reconcile v14", layout="wide", page_icon="🧩")
 
 # --- SESSION STATE INITIALIZATION ---
 if 'analysis_done' not in st.session_state:
@@ -38,7 +38,6 @@ def clean_compare_string(series):
     return series.astype(str).fillna("").str.strip()
 
 # --- 1. UPLOAD ---
-# Compact upload section
 c1, c2 = st.columns(2)
 with c1:
     f1 = st.file_uploader("📂 OUR (Internal Data)", key="f1")
@@ -56,16 +55,14 @@ if f1 and f2:
         # === A. ANCHOR COLUMN ===
         st.subheader("🔗 1. Anchor (Unique ID)")
         
-        # Warning hidden in tooltip help
-        anchor_help_text = "⚠️ IMPORTANT: This column must be UNIQUE (e.g. Order ID). Do NOT use dates or statuses here, or the app will crash due to duplicates."
+        anchor_help_text = "⚠️ IMPORTANT: This column must be UNIQUE (e.g. Order ID). Do NOT use dates or statuses here."
         
-        k1, k2, k_buff = st.columns([2, 2, 3]) # Use buffer to make fields narrower
+        k1, k2, k_buff = st.columns([2, 2, 3]) 
         with k1:
             key_col_1 = st.selectbox(f"Column in OUR", df1.columns, help=anchor_help_text)
         with k2:
             key_col_2 = st.selectbox(f"Column in PROVIDER", df2.columns, help=anchor_help_text)
         
-        # Check for duplicates silently, show warning only if critical
         dupes1 = df1[key_col_1].duplicated().sum()
         dupes2 = df2[key_col_2].duplicated().sum()
         if dupes1 > 0 or dupes2 > 0:
@@ -82,39 +79,37 @@ if f1 and f2:
         p_col_1, p_col_2 = None, None
         
         if use_price:
-            # Layout: [OUR Field] [PROVIDER Field] [Empty Space]
-            # This makes input fields shorter (narrower)
             pc1, pc2, pc3 = st.columns([2, 2, 3]) 
             with pc1:
                 p_col_1 = st.selectbox("Price (OUR)", df1.columns, key="p1")
             with pc2:
                 p_col_2 = st.selectbox("Price (PROVIDER)", df2.columns, key="p2")
         
-        st.write("") # Spacer
+        st.write("") 
 
-        # --- ROW 2: VARIABLE A ---
-        use_var_a = st.checkbox("🔤 Compare String A (e.g. User)", value=False)
+        # --- ROW 2: USER ---
+        use_var_a = st.checkbox("👤 Compare User", value=False)
         va_col_1, va_col_2 = None, None
         
         if use_var_a:
             vc1, vc2, vc3 = st.columns([2, 2, 3])
             with vc1:
-                va_col_1 = st.selectbox("Field A (OUR)", df1.columns, key="va1")
+                va_col_1 = st.selectbox("User (OUR)", df1.columns, key="va1")
             with vc2:
-                va_col_2 = st.selectbox("Field A (PROVIDER)", df2.columns, key="va2")
+                va_col_2 = st.selectbox("User (PROVIDER)", df2.columns, key="va2")
 
-        st.write("") # Spacer
+        st.write("") 
 
-        # --- ROW 3: VARIABLE B ---
-        use_var_b = st.checkbox("🔤 Compare String B (e.g. Status)", value=False)
+        # --- ROW 3: ADDITIONAL FIELD ---
+        use_var_b = st.checkbox("🧩 Compare Additional Field", value=False)
         vb_col_1, vb_col_2 = None, None
         
         if use_var_b:
             vb1, vb2, vb3 = st.columns([2, 2, 3])
             with vb1:
-                vb_col_1 = st.selectbox("Field B (OUR)", df1.columns, key="vb1")
+                vb_col_1 = st.selectbox("Additional (OUR)", df1.columns, key="vb1")
             with vb2:
-                vb_col_2 = st.selectbox("Field B (PROVIDER)", df2.columns, key="vb2")
+                vb_col_2 = st.selectbox("Additional (PROVIDER)", df2.columns, key="vb2")
 
         st.markdown("---")
 
@@ -138,15 +133,15 @@ if f1 and f2:
                 data1['Price_1'] = clean_currency(df1[p_col_1])
                 data2['Price_2'] = clean_currency(df2[p_col_2])
 
-            # Var A
+            # Var A (User)
             if use_var_a:
-                data1['VarA_1'] = clean_compare_string(df1[va_col_1])
-                data2['VarA_2'] = clean_compare_string(df2[va_col_2])
+                data1['User_1'] = clean_compare_string(df1[va_col_1])
+                data2['User_2'] = clean_compare_string(df2[va_col_2])
             
-            # Var B
+            # Var B (Additional)
             if use_var_b:
-                data1['VarB_1'] = clean_compare_string(df1[vb_col_1])
-                data2['VarB_2'] = clean_compare_string(df2[vb_col_2])
+                data1['Add_1'] = clean_compare_string(df1[vb_col_1])
+                data2['Add_2'] = clean_compare_string(df2[vb_col_2])
 
             # 3. MERGE
             merged = pd.merge(
@@ -175,10 +170,10 @@ if f1 and f2:
                         if abs(p1 - p2) > 0.01: errors.append('Price Mismatch')
                     
                     if use_var_a:
-                        if str(row['VarA_1']) != str(row['VarA_2']): errors.append('Field A Mismatch')
+                        if str(row['User_1']) != str(row['User_2']): errors.append('User Mismatch')
 
                     if use_var_b:
-                        if str(row['VarB_1']) != str(row['VarB_2']): errors.append('Field B Mismatch')
+                        if str(row['Add_1']) != str(row['Add_2']): errors.append('Additional Field Mismatch')
 
                 return errors if errors else ['OK']
 
@@ -210,9 +205,6 @@ if f1 and f2:
             m_cols[1].metric("Missing Rows", missing_cnt, delta_color="inverse")
             
             # Price Mismatches
-            price_err_count = 0
-            price_diff_sum = 0.0
-            
             if use_price:
                 price_mismatch_rows = discrepancies[discrepancies['Status'].str.contains('Price Mismatch')]
                 price_err_count = len(price_mismatch_rows)
@@ -224,11 +216,17 @@ if f1 and f2:
                     delta=f"{price_diff_sum:,.2f}", 
                     delta_color="normal"
                 )
+            else:
+                m_cols[2].metric("Price Mismatches", "N/A")
                 
+            # Content Mismatches (User + Additional)
             other_err = 0
             if use_var_a or use_var_b:
-                other_err = discrepancies['Status'].str.contains('Field').sum()
+                if use_var_a: other_err += discrepancies['Status'].str.contains('User Mismatch').sum()
+                if use_var_b: other_err += discrepancies['Status'].str.contains('Additional').sum()
                 m_cols[3].metric("Content Mismatches", other_err, delta_color="inverse")
+            else:
+                 m_cols[3].metric("Content Mismatches", "N/A")
 
             # --- DISPLAY CONTROLS ---
             st.write("---")
@@ -252,8 +250,15 @@ if f1 and f2:
                 
                 if use_price: 
                     cols_to_show.extend(['Price_1', 'Price_2', 'Diff'])
-                if use_var_a: cols_to_show.extend(['VarA_1', 'VarA_2'])
-                if use_var_b: cols_to_show.extend(['VarB_1', 'VarB_2'])
+                
+                if use_var_a: 
+                    # Rename internal columns to readable ones
+                    final_df_raw.rename(columns={'User_1': f"{va_col_1} (OUR)", 'User_2': f"{va_col_2} (PROV)"}, inplace=True)
+                    cols_to_show.extend([f"{va_col_1} (OUR)", f"{va_col_2} (PROV)"])
+                    
+                if use_var_b: 
+                    final_df_raw.rename(columns={'Add_1': f"{vb_col_1} (OUR)", 'Add_2': f"{vb_col_2} (PROV)"}, inplace=True)
+                    cols_to_show.extend([f"{vb_col_1} (OUR)", f"{vb_col_2} (PROV)"])
                 
                 cols_to_show.append('Status')
                 
