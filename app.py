@@ -3,7 +3,7 @@ import pandas as pd
 import datetime
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Universal Reconcile v18", layout="wide", page_icon="🧩")
+st.set_page_config(page_title="Universal Reconcile v19", layout="wide", page_icon="🧩")
 
 # --- SESSION STATE ---
 if 'analysis_done' not in st.session_state: st.session_state['analysis_done'] = False
@@ -34,15 +34,29 @@ def clean_string_key(series):
 def clean_compare_string(series):
     return series.astype(str).fillna("").str.strip()
 
-def parse_dates_smart(series):
-    """Try multiple formats to parse dates safely"""
-    # 1. Try default (ISO or mixed)
+def aggressive_date_parse(series):
+    """
+    Handles mixed formats (ISO with 'Z' vs European dots).
+    Normalizes everything to Timezone-Naive datetime.
+    """
+    # 1. Convert to string to avoid object type issues
+    s = series.astype(str)
+    
+    # 2. Use coerce to force parsing. utc=True handles the 'Z' automatically.
+    # dayfirst=True helps with 31.01.2026
+    # We try two approaches because dayfirst=True can sometimes confuse ISO format
     try:
-        return pd.to_datetime(series, dayfirst=True, errors='coerce')
+        # Priority 1: Smart parse with UTC normalization (Handles 'Z')
+        dt = pd.to_datetime(s, utc=True, dayfirst=True, errors='coerce')
     except:
-        pass
-    # 2. Try force string conversion then parse
-    return pd.to_datetime(series.astype(str), errors='coerce')
+        dt = pd.to_datetime(s, errors='coerce')
+
+    # 3. CRITICAL STEP: Remove Timezone Information
+    # This makes '2026-01-31 20:00:00+00:00' equal to '2026-01-31 20:00:00'
+    if dt.dt.tz is not None:
+        dt = dt.dt.tz_localize(None)
+        
+    return dt
 
 # --- 1. UPLOAD ---
 c1, c2 = st.columns(2)
@@ -75,54 +89,66 @@ if f1 and f2:
             date_col_2 = st.selectbox("Date Column (PROVIDER)", df2.columns)
 
         st.write("")
-        k1, k2 = st.columns(2)
-        key_col_1 = k1.selectbox(f"Anchor ID (OUR)", df1.columns)
-        key_col_2 = k2.selectbox(f"Anchor ID (PROVIDER)", df2.columns)
         
-        # Validate Duplicates
+        anchor_help = "Must be UNIQUE ID."
+        k1, k2, k_buff = st.columns([2, 2, 3])
+        with k1: key_col_1 = st.selectbox(f"Anchor ID (OUR)", df1.columns, help=anchor_help)
+        with k2: key_col_2 = st.selectbox(f"Anchor ID (PROVIDER)", df2.columns, help=anchor_help)
+        
         if df1[key_col_1].duplicated().any() or df2[key_col_2].duplicated().any():
              st.warning(f"⚠️ Warning: Anchors contain duplicates. Results might be inaccurate.")
 
         # === B. COMPARISON FIELDS ===
+        st.write("")
         st.subheader("⚙️ 2. Comparison Fields")
         
         use_price = st.checkbox("💰 Compare Price", value=True)
         p_col_1, p_col_2 = None, None
         if use_price:
-            pc1, pc2 = st.columns(2)
-            p_col_1 = pc1.selectbox("Price (OUR)", df1.columns, key="p1")
-            p_col_2 = pc2.selectbox("Price (PROVIDER)", df2.columns, key="p2")
+            pc1, pc2, pc3 = st.columns([2, 2, 3])
+            with pc1: p_col_1 = st.selectbox("Price (OUR)", df1.columns, key="p1")
+            with pc2: p_col_2 = st.selectbox("Price (PROVIDER)", df2.columns, key="p2")
         
+        st.write("")
         use_var_a = st.checkbox("👤 Compare User", value=False)
         va_col_1, va_col_2 = None, None
         if use_var_a:
-            vc1, vc2 = st.columns(2)
-            va_col_1 = vc1.selectbox("User (OUR)", df1.columns, key="va1")
-            va_col_2 = vc2.selectbox("User (PROVIDER)", df2.columns, key="va2")
+            vc1, vc2, vc3 = st.columns([2, 2, 3])
+            with vc1: va_col_1 = st.selectbox("User (OUR)", df1.columns, key="va1")
+            with vc2: va_col_2 = st.selectbox("User (PROVIDER)", df2.columns, key="va2")
 
+        st.write("")
         use_var_b = st.checkbox("🧩 Compare Additional", value=False)
         vb_col_1, vb_col_2 = None, None
         if use_var_b:
-            vb1, vb2 = st.columns(2)
-            vb_col_1 = vb1.selectbox("Add'l (OUR)", df1.columns, key="vb1")
-            vb_col_2 = vb2.selectbox("Add'l (PROVIDER)", df2.columns, key="vb2")
+            vb1, vb2, vb3 = st.columns([2, 2, 3])
+            with vb1: vb_col_1 = st.selectbox("Add'l (OUR)", df1.columns, key="vb1")
+            with vb2: vb_col_2 = st.selectbox("Add'l (PROVIDER)", df2.columns, key="vb2")
 
         st.markdown("---")
 
         # --- RUN ANALYSIS ---
         if st.button("🚀 Run Analysis", type="primary"):
             
-            # 1. PARSE DATES (Smart Mode)
-            df1['_date_obj'] = parse_dates_smart(df1[date_col_1])
-            df2['_date_obj'] = parse_dates_smart(df2[date_col_2])
+            # --- 0. VALIDATION ---
+            errors_found = []
+            if use_var_a and (va_col_1 == key_col_1 or va_col_2 == key_col_2):
+                errors_found.append("❌ User column cannot be the same as Anchor column.")
+            if errors_found:
+                for e in errors_found: st.error(e)
+                st.stop()
 
-            # Check for parsing errors
-            if df1['_date_obj'].isna().sum() > len(df1) * 0.5:
-                st.warning(f"⚠️ Warning: More than 50% of dates in OUR file could not be parsed. Check format.")
-            if df2['_date_obj'].isna().sum() > len(df2) * 0.5:
-                st.warning(f"⚠️ Warning: More than 50% of dates in PROVIDER file could not be parsed. Check format.")
+            # --- 1. AGGRESSIVE DATE PARSING ---
+            df1['_date_obj'] = aggressive_date_parse(df1[date_col_1])
+            df2['_date_obj'] = aggressive_date_parse(df2[date_col_2])
 
-            # 2. PREPARE DATA
+            # Debug Info (Show if dates failed)
+            na1 = df1['_date_obj'].isna().sum()
+            na2 = df2['_date_obj'].isna().sum()
+            if na1 > 0: st.toast(f"⚠️ {na1} dates in OUR file couldn't be parsed.", icon="⚠️")
+            if na2 > 0: st.toast(f"⚠️ {na2} dates in PROVIDER file couldn't be parsed.", icon="⚠️")
+
+            # --- 2. PREPARE DATA ---
             data1 = pd.DataFrame()
             data2 = pd.DataFrame()
             
@@ -132,6 +158,8 @@ if f1 and f2:
             # Keep display data
             data1['ID_OUR'] = df1[key_col_1].astype(str)
             data2['ID_PROV'] = df2[key_col_2].astype(str)
+            
+            # Store Parsed Date for logic
             data1['Date_OUR'] = df1['_date_obj']
             data2['Date_PROV'] = df2['_date_obj']
 
@@ -145,17 +173,10 @@ if f1 and f2:
                 data1['Add_1'] = clean_compare_string(df1[vb_col_1])
                 data2['Add_2'] = clean_compare_string(df2[vb_col_2])
 
-            # 3. GLOBAL MERGE (FULL OUTER JOIN)
-            # This contains EVERYTHING from both files
+            # --- 3. GLOBAL MERGE ---
             full_merge = pd.merge(data1, data2, on='_anchor', how='outer', indicator=True)
 
-            # 4. FILTERING MAIN REPORT (Target Month Only)
-            
-            # Helper: Is row "Active" in Target Month?
-            # Active in OUR if date is target month
-            # Active in PROV if date is target month
-            # If date is NaT (not a time), we assume it's NOT in target month
-            
+            # --- 4. DATE FILTERING (CUT-OFF LOGIC) ---
             def check_month(dt):
                 if pd.isna(dt): return False
                 return (dt.month == target_month) and (dt.year == target_year)
@@ -163,20 +184,17 @@ if f1 and f2:
             full_merge['In_Month_OUR'] = full_merge['Date_OUR'].apply(check_month)
             full_merge['In_Month_PROV'] = full_merge['Date_PROV'].apply(check_month)
 
-            # MAIN REPORT LOGIC:
-            # We want to see a row in Main Report if it exists in the target month in AT LEAST ONE side.
+            # A row appears in Main Report if it exists in the target month on EITHER side
             main_mask = full_merge['In_Month_OUR'] | full_merge['In_Month_PROV']
             df_main = full_merge[main_mask].copy()
 
-            # 5. ANALYZE MAIN REPORT
+            # --- 5. ANALYZE MAIN REPORT ---
             if use_price:
                 df_main['Diff'] = (df_main['Price_1'].fillna(0) - df_main['Price_2'].fillna(0)).round(2)
 
             def analyze_main(row):
                 errs = []
-                # Existence in CONTEXT OF THIS MONTH
-                # Note: row['_merge'] tells us global existence. We need local existence.
-                
+                # Check Local Existence (Cut-off check)
                 exists_locally_our = row['In_Month_OUR']
                 exists_locally_prov = row['In_Month_PROV']
 
@@ -199,43 +217,40 @@ if f1 and f2:
             df_main['Error_List'] = df_main.apply(analyze_main, axis=1)
             df_main['Status'] = df_main['Error_List'].apply(lambda x: ", ".join(x))
 
-            # 6. INVESTIGATION REPORT (The Second Table)
-            # Take ALL rows from Main Report that have ISSUES (Status != OK)
+            # --- 6. INVESTIGATION REPORT ---
+            # Any row in Main Report that is NOT OK needs investigation
             df_investigation = df_main[df_main['Status'] != 'OK'].copy()
             
             def investigate_row(row):
-                # Analyze global dates to find where it went
                 status = row['Status']
-                
-                date_our = row['Date_OUR']
                 date_prov = row['Date_PROV']
+                date_our = row['Date_OUR']
                 
-                date_our_str = date_our.strftime('%Y-%m-%d') if pd.notnull(date_our) else "None"
-                date_prov_str = date_prov.strftime('%Y-%m-%d') if pd.notnull(date_prov) else "None"
+                # Format for readability
+                d_prov_s = date_prov.strftime('%Y-%m-%d %H:%M') if pd.notnull(date_prov) else "None"
+                d_our_s = date_our.strftime('%Y-%m-%d %H:%M') if pd.notnull(date_our) else "None"
 
-                # Case 1: Missing in PROVIDER (This Month)
+                # If missing in Provider THIS MONTH
                 if 'Missing in PROVIDER' in status:
-                    # Does it exist globally?
+                    # Check Global Existence
                     if row['_merge'] == 'both':
-                        # Yes, it exists globally. Where is it?
-                        return f"✅ Found in PROV on {date_prov_str}"
+                        return f"✅ Found in PROV on {d_prov_s}"
                     else:
-                        # No, it doesn't exist globally (left_only)
-                        return "❌ Not found anywhere in PROV file"
+                        return "❌ Not found anywhere in PROV"
 
-                # Case 2: Missing in OUR (This Month)
+                # If missing in OUR THIS MONTH
                 if 'Missing in OUR' in status:
                     if row['_merge'] == 'both':
-                         return f"✅ Found in OUR on {date_our_str}"
+                         return f"✅ Found in OUR on {d_our_s}"
                     else:
-                         return "❌ Not found anywhere in OUR file"
+                         return "❌ Not found anywhere in OUR"
 
                 return "⚠️ Value Mismatch (Dates OK)"
 
             if not df_investigation.empty:
                 df_investigation['Investigation'] = df_investigation.apply(investigate_row, axis=1)
             
-            # Store in Session
+            # Save State
             st.session_state['main_df'] = df_main
             st.session_state['investigation_df'] = df_investigation
             st.session_state['analysis_done'] = True
@@ -245,11 +260,8 @@ if f1 and f2:
             df_main = st.session_state['main_df']
             df_inv = st.session_state['investigation_df']
             
-            # Styling
             def color_none(val): return 'color: #d32f2f; font-weight: bold;' if str(val) == "None" else ''
-            def color_status(val): 
-                if 'OK' in str(val): return 'color: #2e7d32; font-weight: bold;'
-                return 'color: #d32f2f; font-weight: bold;'
+            def color_status(val): return 'color: #2e7d32; font-weight: bold;' if 'OK' in str(val) else 'color: #d32f2f; font-weight: bold;'
 
             # 1. MAIN REPORT
             st.header(f"📊 Main Report: {target_month_name} {target_year}")
@@ -258,43 +270,50 @@ if f1 and f2:
                 discrepancies = df_main[df_main['Status'] != 'OK']
                 
                 m1, m2, m3 = st.columns(3)
-                m1.metric("Total Transactions (This Month)", len(df_main))
+                m1.metric("Rows (This Month)", len(df_main))
                 m2.metric("Discrepancies", len(discrepancies), delta_color="inverse")
                 if use_price:
                     diff_val = discrepancies[discrepancies['Status'].str.contains('Price')]['Diff'].sum()
                     m3.metric("Net Price Difference", f"{diff_val:,.2f}")
 
-                # Show table
                 show_all = st.checkbox("Show all rows", value=False)
                 view_main = df_main.copy() if show_all else discrepancies.copy()
                 
+                # Prep Display
                 cols = ['ID_OUR', 'ID_PROV']
                 renames = {}
                 if use_price: cols.extend(['Price_1', 'Price_2', 'Diff'])
                 if use_var_a: 
                     cols.extend(['User_1', 'User_2'])
-                    renames.update({'User_1': 'User (OUR)', 'User_2': 'User (PROV)'})
+                    renames.update({'User_1': f"{va_col_1} (OUR)", 'User_2': f"{va_col_2} (PROV)"})
+                if use_var_b:
+                    cols.extend(['Add_1', 'Add_2'])
+                    renames.update({'Add_1': f"{vb_col_1} (OUR)", 'Add_2': f"{vb_col_2} (PROV)"})
+                
                 cols.append('Status')
                 
                 st.dataframe(
                     view_main[cols].rename(columns=renames).fillna("None").style.map(color_none).map(color_status, subset=['Status']),
                     use_container_width=True, hide_index=True
                 )
+                
+                # Download Main
+                csv_main = view_main[cols].rename(columns=renames).to_csv(index=False).encode('utf-8')
+                st.download_button("📥 Download Main Report", csv_main, "main_report.csv", "text/csv")
+                
             else:
-                st.warning("No data found for this selected month.")
+                st.warning("No transactions found for this month.")
 
             st.write("---")
 
             # 2. INVESTIGATION REPORT
-            st.header("🕵️ Investigation Report (Lost & Found)")
-            st.markdown("Here we check all the **Missing** items from above to see if they exist in other months.")
-
+            st.header("🕵️ Investigation (Lost & Found)")
             if not df_inv.empty:
-                st.info(f"Checking {len(df_inv)} problematic orders...")
+                st.info(f"Checking {len(df_inv)} discrepancies against other months...")
                 
                 cols_inv = ['ID_OUR', 'ID_PROV', 'Investigation', 'Status']
                 
-                # Format Dates for display
+                # Add String Dates for context
                 df_inv['Date_OUR_Str'] = df_inv['Date_OUR'].dt.strftime('%Y-%m-%d').fillna("-")
                 df_inv['Date_PROV_Str'] = df_inv['Date_PROV'].dt.strftime('%Y-%m-%d').fillna("-")
                 
@@ -307,19 +326,17 @@ if f1 and f2:
                     'Investigation': 'Result'
                 }
 
-                # Download Investigation
-                csv_inv = df_inv[cols_inv].rename(columns=renames_inv).to_csv(index=False).encode('utf-8')
-                st.download_button("📥 Download Investigation Report", csv_inv, "investigation.csv", "text/csv", type="primary")
-
-                def color_investigation(val):
-                    if '✅' in str(val): return 'color: #2e7d32; font-weight: bold;' # Green
-                    if '❌' in str(val): return 'color: #d32f2f; font-weight: bold;' # Red
+                def color_res(val):
+                    if '✅' in str(val): return 'color: #2e7d32; font-weight: bold;'
+                    if '❌' in str(val): return 'color: #d32f2f; font-weight: bold;'
                     return ''
 
                 st.dataframe(
-                    df_inv[cols_inv].rename(columns=renames_inv).fillna("None").style.map(color_investigation, subset=['Result']),
+                    df_inv[cols_inv].rename(columns=renames_inv).fillna("None").style.map(color_res, subset=['Result']),
                     use_container_width=True, hide_index=True
                 )
-
+                
+                csv_inv = df_inv[cols_inv].rename(columns=renames_inv).to_csv(index=False).encode('utf-8')
+                st.download_button("📥 Download Investigation Report", csv_inv, "investigation_report.csv", "text/csv")
             else:
-                st.success("Nothing to investigate! All clear.")
+                st.success("Nothing to investigate.")
